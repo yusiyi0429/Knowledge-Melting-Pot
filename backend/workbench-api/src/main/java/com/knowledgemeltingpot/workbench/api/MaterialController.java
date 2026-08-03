@@ -17,11 +17,13 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
+import java.net.URL;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -60,14 +62,23 @@ public class MaterialController {
     @PostMapping("/upload-intents/{intentId}/complete")
     public ResponseEntity<MaterialJobAcceptedResponse> completeUpload(@PathVariable UUID intentId,
             @Valid @RequestBody CompleteUploadRequest body, Authentication authentication) {
-        JobSubmission submission = materialService.completeUpload(intentId, body.etag(),
-                currentUser.id(authentication), RequestIdFilter.currentTraceId());
+        List<MaterialService.UploadedPart> parts = body.parts() == null ? List.of() : body.parts().stream()
+                .map(part -> new MaterialService.UploadedPart(part.partNumber(), part.etag()))
+                .toList();
+        JobSubmission submission = materialService.completeUpload(intentId, parts, currentUser.id(authentication),
+                RequestIdFilter.currentTraceId());
         URI status = URI.create("/api/v1/jobs/" + submission.job().id());
         return ResponseEntity.accepted()
                 .location(status)
                 .header("X-Idempotent-Replay", Boolean.toString(submission.replayed()))
                 .body(new MaterialJobAcceptedResponse(submission.job().id(), submission.job().status().name(),
                         status.toString(), status + "/events"));
+    }
+
+    @DeleteMapping("/upload-intents/{intentId}")
+    public ResponseEntity<Void> abortUpload(@PathVariable UUID intentId, Authentication authentication) {
+        materialService.abortUpload(intentId, currentUser.id(authentication), RequestIdFilter.currentTraceId());
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/{materialId}")
@@ -87,7 +98,12 @@ public class MaterialController {
             boolean regulatorySource) {
     }
 
-    public record CompleteUploadRequest(@NotBlank @Size(max = 200) String etag) {
+    public record CompleteUploadRequest(List<@Valid UploadedPartRequest> parts) {
+    }
+
+    public record UploadedPartRequest(
+            @Positive int partNumber,
+            @NotBlank @Size(max = 200) String etag) {
     }
 
     public record UploadIntentResponse(
@@ -101,13 +117,15 @@ public class MaterialController {
             long maxBytes,
             List<String> supportedFormats,
             String completionBehavior,
-            String messageCode) {
+            String messageCode,
+            List<String> presignedUrls) {
 
         static UploadIntentResponse from(MaterialUploadIntentResult result) {
             return new UploadIntentResponse(result.intent().id(), result.material().id(),
-                    result.material().objectKey(), result.material().status().name(), "DECLARATION_ONLY",
-                    "OBJECT_STORAGE_NOT_CONFIGURED", false, Material.MAX_UPLOAD_BYTES, SUPPORTED_FORMATS,
-                    "QUEUES_VALIDATION_ONLY", "material.upload.object-storage-not-configured");
+                    result.material().objectKey(), result.material().status().name(), result.uploadMode(),
+                    result.capabilityStatus(), !result.presignedUrls().isEmpty(), Material.MAX_UPLOAD_BYTES,
+                    SUPPORTED_FORMATS, "QUEUES_VALIDATION", result.messageCode(),
+                    result.presignedUrls().stream().map(URL::toString).toList());
         }
     }
 

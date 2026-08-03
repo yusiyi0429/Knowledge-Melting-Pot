@@ -5,6 +5,7 @@ import com.knowledgemeltingpot.workbench.application.error.NotFoundException;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRecord;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
+import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRound;
 import com.knowledgemeltingpot.workbench.domain.JobType;
@@ -15,6 +16,8 @@ import com.knowledgemeltingpot.workbench.domain.MaterialStatus;
 import com.knowledgemeltingpot.workbench.domain.MaterialUploadIntent;
 import com.knowledgemeltingpot.workbench.domain.RoundMaterial;
 import com.knowledgemeltingpot.workbench.domain.SubScene;
+import com.knowledgemeltingpot.workbench.domain.UploadState;
+import java.net.URL;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -22,6 +25,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -30,22 +34,25 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class MaterialService {
     private static final Duration IDEMPOTENCY_TTL = Duration.ofHours(24);
+    private static final Duration PRESIGN_UPLOAD_TIMEOUT = Duration.ofMinutes(15);
 
     private final MaterialRepository materialRepository;
     private final SceneRepository sceneRepository;
     private final IdempotencyRepository idempotencyRepository;
     private final JobService jobService;
     private final AuditService auditService;
+    private final Optional<ObjectStoragePort> objectStorage;
     private final Clock clock;
 
     public MaterialService(MaterialRepository materialRepository, SceneRepository sceneRepository,
             IdempotencyRepository idempotencyRepository, JobService jobService, AuditService auditService,
-            Clock clock) {
+            Optional<ObjectStoragePort> objectStorage, Clock clock) {
         this.materialRepository = materialRepository;
         this.sceneRepository = sceneRepository;
         this.idempotencyRepository = idempotencyRepository;
         this.jobService = jobService;
         this.auditService = auditService;
+        this.objectStorage = objectStorage;
         this.clock = clock;
     }
 
@@ -92,8 +99,9 @@ public class MaterialService {
             }
         }
 
+        String quarantineKey = "quarantine/" + materialId;
         Material material = materialRepository.insert(new Material(materialId, upload.fileName(), upload.format(),
-                upload.mediaType(), "quarantine/" + materialId, upload.sha256(), upload.sizeBytes(),
+                upload.mediaType(), quarantineKey, upload.sha256(), upload.sizeBytes(),
                 MaterialStatus.PENDING_UPLOAD, now, now));
         List<RoundMaterial> bindings = targetSubScenes.stream()
                 .sorted(Comparator.comparing(SubScene::id))
@@ -101,20 +109,49 @@ public class MaterialService {
                         command.partition(), command.shareScope(), command.regulatorySource(), true, now))
                 .toList();
         materialRepository.insertBindings(bindings);
-        MaterialUploadIntent intent = materialRepository.insertIntent(new MaterialUploadIntent(intentId,
-                material.id(), actorId, null, "", now, null));
+
+        MaterialUploadIntent intent;
+        List<URL> presignedUrls;
+        boolean configured;
+        String uploadMode;
+        String capabilityStatus;
+        String messageCode;
+        if (objectStorage.isPresent()) {
+            ObjectStoragePort port = objectStorage.get();
+            ObjectStoragePort.MultipartUpload multipart = port.initiateMultipart(ObjectStoragePort.StorageZone.QUARANTINE,
+                    quarantineKey, material.mediaType(), material.sizeBytes(), PRESIGN_UPLOAD_TIMEOUT);
+            intent = materialRepository.insertIntent(MaterialUploadIntent.multipart(intentId, materialId, actorId, now,
+                    multipart.uploadId(), multipart.objectKey(), multipart.partSize(), multipart.partCount(),
+                    multipart.expiresAt()));
+            presignedUrls = port.presignParts(ObjectStoragePort.StorageZone.QUARANTINE, multipart.uploadId(),
+                    multipart.objectKey(), 1, multipart.partCount(), PRESIGN_UPLOAD_TIMEOUT).stream()
+                    .map(ObjectStoragePort.PresignedPart::url)
+                    .toList();
+            configured = true;
+            uploadMode = "MULTIPART_PRESIGNED";
+            capabilityStatus = "MULTIPART_PRESIGNED";
+            messageCode = "material.upload.multipart-presigned";
+        } else {
+            intent = materialRepository.insertIntent(MaterialUploadIntent.declarationOnly(intentId, materialId, actorId, now));
+            presignedUrls = List.of();
+            configured = false;
+            uploadMode = "DECLARATION_ONLY";
+            capabilityStatus = "OBJECT_STORAGE_NOT_CONFIGURED";
+            messageCode = "material.upload.object-storage-not-configured";
+        }
         auditService.record(actorId, "MATERIAL_UPLOAD_INTENT_CREATED", "MATERIAL", material.id(), Map.of(
                 "roundId", round.id(),
                 "format", material.format(),
                 "sizeBytes", material.sizeBytes(),
                 "partition", command.partition(),
-                "shareScope", command.shareScope()), traceId);
-        return new MaterialUploadIntentResult(intent, material, bindings, false);
+                "shareScope", command.shareScope(),
+                "objectStorageConfigured", configured), traceId);
+        return new MaterialUploadIntentResult(intent, material, bindings, false, configured, uploadMode,
+                capabilityStatus, messageCode, presignedUrls);
     }
 
     @Transactional
-    public JobSubmission completeUpload(UUID intentId, String clientEtag, UUID actorId, String traceId) {
-        String normalizedEtag = validateEtag(clientEtag);
+    public JobSubmission completeUpload(UUID intentId, List<UploadedPart> parts, UUID actorId, String traceId) {
         MaterialUploadIntent intent = materialRepository.lockIntent(intentId)
                 .orElseThrow(() -> new NotFoundException("upload intent does not exist"));
         if (!intent.createdBy().equals(actorId)) {
@@ -123,9 +160,58 @@ public class MaterialService {
         if (intent.validationJobId() != null) {
             return new JobSubmission(jobService.get(intent.validationJobId()), true);
         }
+        if (intent.uploadState() == UploadState.ABORTED || intent.uploadState() == UploadState.EXPIRED) {
+            throw new ConflictException("upload intent is no longer active");
+        }
         Material material = materialRepository.findById(intent.materialId())
                 .orElseThrow(() -> new ConflictException("upload intent material is unavailable"));
-        Material uploaded = material.transitionTo(MaterialStatus.UPLOADED, Instant.now(clock));
+
+        if (objectStorage.isPresent() && intent.isMultipart()) {
+            return completeMultipartUpload(intent, parts, material, actorId, traceId);
+        }
+        return completeDeclarationOnly(intent, material, actorId, traceId);
+    }
+
+    private JobSubmission completeMultipartUpload(MaterialUploadIntent intent, List<UploadedPart> parts,
+            Material material, UUID actorId, String traceId) {
+        ObjectStoragePort port = objectStorage.orElseThrow();
+        if (parts == null || parts.isEmpty()) {
+            throw new IllegalArgumentException("uploaded parts are required");
+        }
+        List<ObjectStoragePort.UploadedPart> uploadedParts = parts.stream()
+                .map(part -> new ObjectStoragePort.UploadedPart(part.partNumber(), part.etag()))
+                .sorted(Comparator.comparingInt(ObjectStoragePort.UploadedPart::partNumber))
+                .toList();
+        if (uploadedParts.size() != intent.partCount()) {
+            throw new IllegalArgumentException("uploaded parts must match the declared part count");
+        }
+        for (int index = 0; index < uploadedParts.size(); index++) {
+            if (uploadedParts.get(index).partNumber() != index + 1) {
+                throw new IllegalArgumentException("uploaded part numbers must be contiguous from one");
+            }
+        }
+        if (!materialRepository.incrementCompletionAttempt(intent.id())
+                || !materialRepository.updateIntentState(intent.id(), UploadState.COMPLETING)) {
+            throw new ConflictException("upload intent state changed during completion");
+        }
+        ObjectStoragePort.ObjectHead head = port.completeMultipart(ObjectStoragePort.StorageZone.QUARANTINE,
+                intent.storageUploadId(), intent.quarantineObjectKey(), uploadedParts);
+        if (head.sizeBytes() != material.sizeBytes()) {
+            throw new ConflictException("uploaded size does not match declaration");
+        }
+        return finalizeCompletion(intent, material, head.etag(), actorId, traceId);
+    }
+
+    private JobSubmission completeDeclarationOnly(MaterialUploadIntent intent, Material material, UUID actorId,
+            String traceId) {
+        materialRepository.incrementCompletionAttempt(intent.id());
+        return finalizeCompletion(intent, material, "", actorId, traceId);
+    }
+
+    private JobSubmission finalizeCompletion(MaterialUploadIntent intent, Material material, String etag,
+            UUID actorId, String traceId) {
+        Instant now = Instant.now(clock);
+        Material uploaded = material.transitionTo(MaterialStatus.UPLOADED, now);
         if (!materialRepository.transitionStatus(material.id(), material.status(), uploaded.status(),
                 uploaded.updatedAt())) {
             throw new ConflictException("material is not awaiting upload completion");
@@ -134,18 +220,42 @@ public class MaterialService {
         JobSubmission submission = jobService.submit(JobType.INGEST, "MATERIAL", material.id(), Map.of(
                 "intentId", intent.id(),
                 "objectKey", material.objectKey(),
-                "declaredEtag", normalizedEtag,
+                "clientEtag", etag,
                 "expectedSha256", material.sha256(),
                 "expectedSizeBytes", material.sizeBytes(),
-                "format", material.format(),
-                "validationOnly", true), actorId, null, traceId);
-        Instant completedAt = Instant.now(clock);
-        if (!materialRepository.completeIntent(intent.id(), submission.job().id(), normalizedEtag, completedAt)) {
+                "format", material.format()), actorId, null, traceId);
+        if (!materialRepository.completeIntent(intent.id(), submission.job().id(), etag, now)) {
             throw new ConflictException("upload intent completion raced with another request");
         }
-        auditService.record(actorId, "MATERIAL_UPLOAD_CLAIMED", "MATERIAL", material.id(),
+        auditService.record(actorId, "MATERIAL_UPLOAD_COMPLETED", "MATERIAL", material.id(),
                 Map.of("validationJobId", submission.job().id()), traceId);
         return submission;
+    }
+
+    @Transactional
+    public void abortUpload(UUID intentId, UUID actorId, String traceId) {
+        MaterialUploadIntent intent = materialRepository.lockIntent(intentId)
+                .orElseThrow(() -> new NotFoundException("upload intent does not exist"));
+        if (!intent.createdBy().equals(actorId)) {
+            throw new NotFoundException("upload intent does not exist");
+        }
+        if (intent.uploadState() == UploadState.COMPLETED || intent.uploadState() == UploadState.ABORTED
+                || intent.uploadState() == UploadState.EXPIRED) {
+            throw new ConflictException("upload intent is already terminal");
+        }
+        Instant now = Instant.now(clock);
+        if (objectStorage.isPresent() && intent.isMultipart()) {
+            try {
+                objectStorage.get().abortMultipart(ObjectStoragePort.StorageZone.QUARANTINE,
+                        intent.storageUploadId(), intent.quarantineObjectKey());
+            } catch (Exception exception) {
+                // Best-effort abort; the DB state remains the source of truth.
+            }
+        }
+        if (!materialRepository.abortIntent(intent.id(), now)) {
+            throw new ConflictException("upload intent could not be aborted");
+        }
+        auditService.record(actorId, "MATERIAL_UPLOAD_ABORTED", "MATERIAL", intent.materialId(), Map.of(), traceId);
     }
 
     @Transactional(readOnly = true)
@@ -193,8 +303,21 @@ public class MaterialService {
                     .orElseThrow(() -> new ConflictException("idempotent upload intent is unavailable"));
             Material material = materialRepository.findById(intent.materialId())
                     .orElseThrow(() -> new ConflictException("idempotent material is unavailable"));
+            List<URL> urls = objectStorage.isPresent() && intent.isMultipart()
+                    ? objectStorage.get().presignParts(ObjectStoragePort.StorageZone.QUARANTINE,
+                            intent.storageUploadId(), intent.quarantineObjectKey(), 1, intent.partCount(),
+                            PRESIGN_UPLOAD_TIMEOUT).stream()
+                            .map(ObjectStoragePort.PresignedPart::url)
+                            .toList()
+                    : List.of();
             return new MaterialUploadIntentResult(intent, material,
-                    materialRepository.findBindings(material.id()), true);
+                    materialRepository.findBindings(material.id()), true, objectStorage.isPresent() && intent.isMultipart(),
+                    intent.isMultipart() ? "MULTIPART_PRESIGNED" : "DECLARATION_ONLY",
+                    objectStorage.isPresent() && intent.isMultipart() ? "MULTIPART_PRESIGNED"
+                            : "OBJECT_STORAGE_NOT_CONFIGURED",
+                    intent.isMultipart() ? "material.upload.multipart-presigned"
+                            : "material.upload.object-storage-not-configured",
+                    urls);
         }).orElse(null);
     }
 
@@ -208,11 +331,17 @@ public class MaterialService {
                 Boolean.toString(command.regulatorySource())));
     }
 
-    private String validateEtag(String clientEtag) {
-        if (clientEtag == null || clientEtag.isBlank() || clientEtag.length() > 200
-                || clientEtag.chars().anyMatch(Character::isISOControl)) {
-            throw new IllegalArgumentException("etag must be 1 to 200 printable characters");
+    public record UploadedPart(int partNumber, String etag) {
+        public UploadedPart {
+            if (partNumber < 1) {
+                throw new IllegalArgumentException("partNumber must be positive");
+            }
+            if (etag == null || etag.isBlank()) {
+                throw new IllegalArgumentException("etag is required");
+            }
+            if (etag.length() > 200) {
+                throw new IllegalArgumentException("etag must not exceed 200 characters");
+            }
         }
-        return clientEtag.trim();
     }
 }

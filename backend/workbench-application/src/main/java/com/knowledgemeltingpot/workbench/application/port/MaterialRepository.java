@@ -4,6 +4,7 @@ import com.knowledgemeltingpot.workbench.domain.Material;
 import com.knowledgemeltingpot.workbench.domain.MaterialStatus;
 import com.knowledgemeltingpot.workbench.domain.MaterialUploadIntent;
 import com.knowledgemeltingpot.workbench.domain.RoundMaterial;
+import com.knowledgemeltingpot.workbench.domain.UploadState;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -26,5 +27,14 @@ public interface MaterialRepository {
 
     boolean transitionStatus(UUID materialId, MaterialStatus expected, MaterialStatus target, Instant updatedAt);
 
+    boolean updateBlobId(UUID materialId, UUID blobId, MaterialStatus expected, MaterialStatus target,
+            Instant updatedAt);
+
     boolean completeIntent(UUID intentId, UUID jobId, String clientEtag, Instant completedAt);
+
+    boolean updateIntentState(UUID intentId, UploadState state);
+
+    boolean incrementCompletionAttempt(UUID intentId);
+
+    boolean abortIntent(UUID intentId, Instant abortedAt);
 }

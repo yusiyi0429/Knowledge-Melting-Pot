@@ -36,12 +36,14 @@ public class JobWorker {
     private final String workerId;
     private final Duration leaseDuration;
     private final Semaphore capacity;
+    private final Set<JobType> acceptedTypes;
 
     public JobWorker(JobLeaseRepository leases, JobService jobs, List<JobHandler> handlers,
             ExecutorService jobExecutor, ScheduledExecutorService heartbeatExecutor, Clock clock,
             @Value("${workbench.worker.id:${HOSTNAME:worker}-${random.uuid}}") String workerId,
             @Value("${workbench.worker.lease-duration:PT2M}") Duration leaseDuration,
-            @Value("${workbench.worker.max-concurrency:4}") int maxConcurrency) {
+            @Value("${workbench.worker.max-concurrency:4}") int maxConcurrency,
+            @Value("${workbench.worker.accepted-types:}") String acceptedTypesCsv) {
         this.leases = leases;
         this.jobs = jobs;
         this.handlers = List.copyOf(handlers);
@@ -51,6 +53,7 @@ public class JobWorker {
         this.workerId = workerId;
         this.leaseDuration = leaseDuration;
         this.capacity = new Semaphore(maxConcurrency);
+        this.acceptedTypes = parseAcceptedTypes(acceptedTypesCsv);
     }
 
     @Scheduled(fixedDelayString = "${workbench.worker.poll-delay:1000}")
@@ -58,10 +61,10 @@ public class JobWorker {
         if (!capacity.tryAcquire()) {
             return;
         }
-        Set<JobType> acceptedTypes = handlers.isEmpty()
-                ? Set.of()
-                : EnumSet.allOf(JobType.class);
-        var claimed = leases.claimNext(workerId, acceptedTypes, leaseDuration, Instant.now(clock));
+        Set<JobType> claimable = acceptedTypes.isEmpty()
+                ? supportedTypes()
+                : EnumSet.copyOf(acceptedTypes);
+        var claimed = leases.claimNext(workerId, claimable, leaseDuration, Instant.now(clock));
         if (claimed.isEmpty()) {
             capacity.release();
             return;
@@ -73,6 +76,32 @@ public class JobWorker {
                 capacity.release();
             }
         });
+    }
+
+    private Set<JobType> supportedTypes() {
+        Set<JobType> supported = EnumSet.noneOf(JobType.class);
+        for (JobHandler handler : handlers) {
+            for (JobType type : JobType.values()) {
+                if (handler.supports(type)) {
+                    supported.add(type);
+                }
+            }
+        }
+        return supported;
+    }
+
+    private Set<JobType> parseAcceptedTypes(String csv) {
+        if (csv == null || csv.isBlank()) {
+            return EnumSet.noneOf(JobType.class);
+        }
+        Set<JobType> result = EnumSet.noneOf(JobType.class);
+        for (String token : csv.split(",")) {
+            String trimmed = token.trim();
+            if (!trimmed.isEmpty()) {
+                result.add(JobType.valueOf(trimmed));
+            }
+        }
+        return result;
     }
 
     private void execute(LeasedJob leasedJob) {

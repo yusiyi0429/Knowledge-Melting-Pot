@@ -21,6 +21,11 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>com.knowledgemeltingpot</groupId>
+            <artifactId>workbench-object-storage-adapter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>

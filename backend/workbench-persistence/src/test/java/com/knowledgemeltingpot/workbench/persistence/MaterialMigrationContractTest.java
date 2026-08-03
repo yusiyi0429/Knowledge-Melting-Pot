@@ -29,6 +29,27 @@ class MaterialMigrationContractTest {
     }
 
     @Test
+    void versionSevenAddsMultipartObjectStorageAndIngestSecurity() throws IOException {
+        String migration;
+        try (var stream = getClass().getResourceAsStream(
+                "/db/migration/V7__object_storage_and_ingest_security.sql")) {
+            if (stream == null) {
+                throw new IOException("V7 material migration is missing");
+            }
+            migration = new String(stream.readAllBytes(), StandardCharsets.UTF_8).toLowerCase();
+        }
+
+        assertThat(migration)
+                .contains("storage_upload_id")
+                .contains("quarantine_object_key")
+                .contains("upload_state")
+                .contains("material_blob")
+                .contains("material_ingest_attempt")
+                .contains("prevent_material_blob_mutation")
+                .contains("prevent_material_ingest_attempt_delete");
+    }
+
+    @Test
     void purposeSpecificQueriesPhysicallySeparateHoldout() {
         assertThat(JdbcMaterialRepository.KNOWLEDGE_PARTITIONS)
                 .contains("SOURCE", "LABELED_TRAIN")

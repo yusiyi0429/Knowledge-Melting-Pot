@@ -10,8 +10,10 @@ import com.knowledgemeltingpot.workbench.domain.MaterialShareScope;
 import com.knowledgemeltingpot.workbench.domain.MaterialStatus;
 import com.knowledgemeltingpot.workbench.domain.MaterialUploadIntent;
 import com.knowledgemeltingpot.workbench.domain.RoundMaterial;
+import com.knowledgemeltingpot.workbench.domain.UploadState;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -119,13 +121,26 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
     public MaterialUploadIntent insertIntent(MaterialUploadIntent intent) {
         jdbc.sql("""
                 INSERT INTO material_upload_intent (
-                    id, material_id, created_by, validation_job_id, client_etag, created_at, completed_at)
-                VALUES (:id, :materialId, :createdBy, NULL, '', :createdAt, NULL)
+                    id, material_id, created_by, validation_job_id, client_etag, created_at, completed_at,
+                    storage_upload_id, quarantine_object_key, part_size, part_count, expires_at,
+                    upload_state, completion_attempt)
+                VALUES (
+                    :id, :materialId, :createdBy, NULL, :clientEtag, :createdAt, NULL,
+                    :storageUploadId, :quarantineObjectKey, :partSize, :partCount, :expiresAt,
+                    :uploadState, :completionAttempt)
                 """)
                 .param("id", intent.id())
                 .param("materialId", intent.materialId())
                 .param("createdBy", intent.createdBy())
+                .param("clientEtag", intent.clientEtag())
                 .param("createdAt", JdbcTimes.toJdbc(intent.createdAt()))
+                .param("storageUploadId", intent.storageUploadId())
+                .param("quarantineObjectKey", intent.quarantineObjectKey())
+                .param("partSize", intent.partSize())
+                .param("partCount", intent.partCount())
+                .param("expiresAt", JdbcTimes.toJdbc(intent.expiresAt()))
+                .param("uploadState", intent.uploadState().name())
+                .param("completionAttempt", intent.completionAttempt())
                 .update();
         return intent;
     }
@@ -155,16 +170,65 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
     }
 
     @Override
+    public boolean updateBlobId(UUID materialId, UUID blobId, MaterialStatus expected, MaterialStatus target,
+            Instant updatedAt) {
+        return jdbc.sql("""
+                UPDATE material SET blob_id = :blobId, status = :target, updated_at = :updatedAt
+                WHERE id = :id AND status = :expected
+                """)
+                .param("id", materialId)
+                .param("blobId", blobId)
+                .param("expected", expected.name())
+                .param("target", target.name())
+                .param("updatedAt", JdbcTimes.toJdbc(updatedAt))
+                .update() == 1;
+    }
+
+    @Override
     public boolean completeIntent(UUID intentId, UUID jobId, String clientEtag, Instant completedAt) {
         return jdbc.sql("""
                 UPDATE material_upload_intent
-                SET validation_job_id = :jobId, client_etag = :clientEtag, completed_at = :completedAt
+                SET validation_job_id = :jobId, client_etag = :clientEtag, completed_at = :completedAt,
+                    upload_state = 'COMPLETED'
                 WHERE id = :id AND validation_job_id IS NULL
                 """)
                 .param("id", intentId)
                 .param("jobId", jobId)
                 .param("clientEtag", clientEtag)
                 .param("completedAt", JdbcTimes.toJdbc(completedAt))
+                .update() == 1;
+    }
+
+    @Override
+    public boolean updateIntentState(UUID intentId, UploadState state) {
+        return jdbc.sql("""
+                UPDATE material_upload_intent SET upload_state = :state WHERE id = :id
+                """)
+                .param("id", intentId)
+                .param("state", state.name())
+                .update() == 1;
+    }
+
+    @Override
+    public boolean incrementCompletionAttempt(UUID intentId) {
+        return jdbc.sql("""
+                UPDATE material_upload_intent
+                SET completion_attempt = completion_attempt + 1
+                WHERE id = :id
+                """)
+                .param("id", intentId)
+                .update() == 1;
+    }
+
+    @Override
+    public boolean abortIntent(UUID intentId, Instant abortedAt) {
+        return jdbc.sql("""
+                UPDATE material_upload_intent
+                SET upload_state = 'ABORTED', completed_at = :abortedAt
+                WHERE id = :id AND upload_state IN ('INITIATED', 'UPLOADING', 'COMPLETING')
+                """)
+                .param("id", intentId)
+                .param("abortedAt", JdbcTimes.toJdbc(abortedAt))
                 .update() == 1;
     }
 
@@ -199,7 +263,9 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
     private Optional<MaterialUploadIntent> queryIntent(UUID intentId, boolean lock) {
         String suffix = lock ? " FOR UPDATE" : "";
         return jdbc.sql("""
-                SELECT id, material_id, created_by, validation_job_id, client_etag, created_at, completed_at
+                SELECT id, material_id, created_by, validation_job_id, client_etag, created_at, completed_at,
+                       storage_upload_id, quarantine_object_key, part_size, part_count, expires_at,
+                       upload_state, completion_attempt
                 FROM material_upload_intent WHERE id = :id
                 """ + suffix)
                 .param("id", intentId)
@@ -236,6 +302,9 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
 
     private static MaterialUploadIntent mapIntent(ResultSet resultSet, int rowNumber) throws SQLException {
         var completedAt = resultSet.getTimestamp("completed_at");
+        Long partSize = resultSet.getObject("part_size", Long.class);
+        Integer partCount = resultSet.getObject("part_count", Integer.class);
+        Timestamp expiresAt = resultSet.getTimestamp("expires_at");
         return new MaterialUploadIntent(
                 resultSet.getObject("id", UUID.class),
                 resultSet.getObject("material_id", UUID.class),
@@ -243,7 +312,14 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
                 resultSet.getObject("validation_job_id", UUID.class),
                 resultSet.getString("client_etag"),
                 resultSet.getTimestamp("created_at").toInstant(),
-                completedAt == null ? null : completedAt.toInstant());
+                completedAt == null ? null : completedAt.toInstant(),
+                resultSet.getString("storage_upload_id"),
+                resultSet.getString("quarantine_object_key"),
+                partSize,
+                partCount,
+                expiresAt == null ? null : expiresAt.toInstant(),
+                UploadState.valueOf(resultSet.getString("upload_state")),
+                resultSet.getInt("completion_attempt"));
     }
 
     private static MaterialSelection mapSelection(ResultSet resultSet, int rowNumber) throws SQLException {

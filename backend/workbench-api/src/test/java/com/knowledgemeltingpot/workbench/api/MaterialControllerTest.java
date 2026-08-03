@@ -54,7 +54,7 @@ class MaterialControllerTest {
                 "quarantine/" + materialId, "a".repeat(64), 10, MaterialStatus.PENDING_UPLOAD, NOW, NOW);
         RoundMaterial binding = new RoundMaterial(UUID.randomUUID(), materialId, roundId, subSceneId,
                 MaterialPartition.SOURCE, MaterialShareScope.ROUND, false, true, NOW);
-        MaterialUploadIntent intent = new MaterialUploadIntent(intentId, materialId, actorId, null, "", NOW, null);
+        MaterialUploadIntent intent = MaterialUploadIntent.declarationOnly(intentId, materialId, actorId, NOW);
         when(service.createUploadIntent(any(), eq(actorId), eq("intent-key-001"), anyString()))
                 .thenReturn(new MaterialUploadIntentResult(intent, material, List.of(binding), false));
 
@@ -66,7 +66,7 @@ class MaterialControllerTest {
         assertThat(response.getBody().uploadMode()).isEqualTo("DECLARATION_ONLY");
         assertThat(response.getBody().capabilityStatus()).isEqualTo("OBJECT_STORAGE_NOT_CONFIGURED");
         assertThat(response.getBody().uploadUrlAvailable()).isFalse();
-        assertThat(response.getBody().completionBehavior()).isEqualTo("QUEUES_VALIDATION_ONLY");
+        assertThat(response.getBody().completionBehavior()).isEqualTo("QUEUES_VALIDATION");
         assertThat(response.getHeaders().getFirst("X-Idempotent-Replay")).isEqualTo("false");
     }
 
@@ -76,11 +76,11 @@ class MaterialControllerTest {
         UUID jobId = UUID.randomUUID();
         Job job = new Job(jobId, JobType.INGEST, "MATERIAL", UUID.randomUUID(), JobStatus.QUEUED, 0, 0,
                 "{}", "", "", "", actorId, NOW, NOW);
-        when(service.completeUpload(intentId, "etag", actorId, ""))
+        when(service.completeUpload(eq(intentId), any(), eq(actorId), anyString()))
                 .thenReturn(new JobSubmission(job, true));
 
         var response = controller.completeUpload(intentId,
-                new MaterialController.CompleteUploadRequest("etag"), authentication);
+                new MaterialController.CompleteUploadRequest(List.of()), authentication);
 
         assertThat(response.getStatusCode().value()).isEqualTo(202);
         assertThat(response.getBody().jobId()).isEqualTo(jobId);

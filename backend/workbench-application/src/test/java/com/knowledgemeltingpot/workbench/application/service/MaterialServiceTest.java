@@ -27,6 +27,7 @@ import com.knowledgemeltingpot.workbench.domain.MaterialStatus;
 import com.knowledgemeltingpot.workbench.domain.MaterialUploadIntent;
 import com.knowledgemeltingpot.workbench.domain.RoundMaterial;
 import com.knowledgemeltingpot.workbench.domain.SubScene;
+import com.knowledgemeltingpot.workbench.domain.UploadState;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -63,7 +64,7 @@ class MaterialServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new MaterialService(materials, scenes, idempotency, jobs, audit,
+        service = new MaterialService(materials, scenes, idempotency, jobs, audit, Optional.empty(),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         UUID sceneId = UUID.randomUUID();
         primary = new SubScene(UUID.randomUUID(), sceneId, "Primary", "", NOW, NOW);
@@ -82,6 +83,7 @@ class MaterialServiceTest {
 
         assertThat(result.material().status()).isEqualTo(MaterialStatus.PENDING_UPLOAD);
         assertThat(result.material().objectKey()).startsWith("quarantine/");
+        assertThat(result.uploadMode()).isEqualTo("DECLARATION_ONLY");
         assertThat(result.bindings()).singleElement().satisfies(binding -> {
             assertThat(binding.roundId()).isEqualTo(round.id());
             assertThat(binding.subSceneId()).isEqualTo(primary.id());
@@ -147,22 +149,22 @@ class MaterialServiceTest {
         Material material = new Material(materialId, "rules.pdf", com.knowledgemeltingpot.workbench.domain.MaterialFormat.PDF,
                 "application/pdf", "quarantine/" + materialId, "a".repeat(64), 10,
                 MaterialStatus.PENDING_UPLOAD, NOW, NOW);
-        MaterialUploadIntent pending = new MaterialUploadIntent(intentId, materialId, ACTOR_ID, null, "", NOW, null);
-        MaterialUploadIntent completed = new MaterialUploadIntent(intentId, materialId, ACTOR_ID, jobId,
-                "etag-value", NOW, NOW);
+        MaterialUploadIntent pending = MaterialUploadIntent.declarationOnly(intentId, materialId, ACTOR_ID, NOW);
+        MaterialUploadIntent completed = pending.completed(jobId, "", NOW);
         Job job = new Job(jobId, JobType.INGEST, "MATERIAL", materialId, JobStatus.QUEUED, 0, 0, "{}", "", "", "",
                 ACTOR_ID, NOW, NOW);
         when(materials.lockIntent(intentId)).thenReturn(Optional.of(pending), Optional.of(completed));
         when(materials.findById(materialId)).thenReturn(Optional.of(material));
         when(materials.transitionStatus(materialId, MaterialStatus.PENDING_UPLOAD, MaterialStatus.UPLOADED, NOW))
                 .thenReturn(true);
+        when(materials.incrementCompletionAttempt(intentId)).thenReturn(true);
         when(jobs.submit(eq(JobType.INGEST), eq("MATERIAL"), eq(materialId), anyMap(), eq(ACTOR_ID),
                 eq(null), eq("trace"))).thenReturn(new JobSubmission(job, false));
-        when(materials.completeIntent(intentId, jobId, "etag-value", NOW)).thenReturn(true);
+        when(materials.completeIntent(intentId, jobId, "", NOW)).thenReturn(true);
         when(jobs.get(jobId)).thenReturn(job);
 
-        JobSubmission first = service.completeUpload(intentId, "etag-value", ACTOR_ID, "trace");
-        JobSubmission replay = service.completeUpload(intentId, "etag-value", ACTOR_ID, "trace");
+        JobSubmission first = service.completeUpload(intentId, List.of(), ACTOR_ID, "trace");
+        JobSubmission replay = service.completeUpload(intentId, List.of(), ACTOR_ID, "trace");
 
         assertThat(first.job().id()).isEqualTo(jobId);
         assertThat(first.replayed()).isFalse();
@@ -171,8 +173,8 @@ class MaterialServiceTest {
         ArgumentCaptor<Map<String, ?>> payload = ArgumentCaptor.forClass(Map.class);
         verify(jobs, times(1)).submit(eq(JobType.INGEST), eq("MATERIAL"), eq(materialId), payload.capture(),
                 eq(ACTOR_ID), eq(null), eq("trace"));
-        assertThat(payload.getValue().get("validationOnly")).isEqualTo(true);
         assertThat(payload.getValue().get("expectedSha256")).isEqualTo("a".repeat(64));
+        assertThat(payload.getValue().get("format")).isEqualTo(com.knowledgemeltingpot.workbench.domain.MaterialFormat.PDF);
     }
 
     private MaterialUploadCommand command(MaterialPartition partition, MaterialShareScope shareScope,

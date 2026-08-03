@@ -19,4 +19,21 @@ if rg -n '^[[:space:]]*import[[:space:]]+(static[[:space:]]+)?com\.openjiuwen\.'
   exit 1
 fi
 
+if rg -n '^[[:space:]]*import[[:space:]]+(static[[:space:]]+)?software\.amazon\.awssdk\.' "$repo_root/backend" \
+  --glob '*.java' \
+  --glob '!**/workbench-object-storage-adapter/**' >/dev/null; then
+  echo "AWS SDK v2 imports escaped the object-storage adapter module." >&2
+  exit 1
+fi
+
+if rg -n '^[[:space:]]*import[[:space:]]+(static[[:space:]]+)?(org\.apache\.tika\.|org\.apache\.pdfbox\.|org\.apache\.poi\.)' \
+  "$repo_root/backend" \
+  --glob '*.java' \
+  --glob '!**/workbench-content-adapter/**' >/dev/null; then
+  echo "Tika/PDFBox/POI imports escaped the content adapter module." >&2
+  exit 1
+fi
+
 echo "Agent runtime boundary: OK"
+echo "Object-storage boundary: OK"
+echo "Content adapter boundary: OK"

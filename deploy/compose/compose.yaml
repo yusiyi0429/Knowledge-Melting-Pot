@@ -24,11 +24,24 @@ services:
       MINIO_ROOT_PASSWORD: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
     volumes:
       - object-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 3s
       retries: 20
+    networks: [backend]
+
+  minio-init:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c", "mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} && mc mb --ignore-existing local/kmp-quarantine local/kmp-verified-knowledge local/kmp-verified-holdout local/kmp-assets"]
+    environment:
+      MINIO_ROOT_USER: ${KMP_MINIO_ROOT_USER:-kmp-local}
+      MINIO_ROOT_PASSWORD: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
     networks: [backend]
 
   clamav:
@@ -52,9 +65,13 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${KMP_DB_NAME:-knowledge_melting_pot}
       SPRING_DATASOURCE_USERNAME: ${KMP_DB_USER:-kmp}
       SPRING_DATASOURCE_PASSWORD: ${KMP_DB_PASSWORD:-kmp-local-only}
-      KMP_S3_ENDPOINT: http://minio:9000
-      KMP_S3_ACCESS_KEY: ${KMP_MINIO_ROOT_USER:-kmp-local}
-      KMP_S3_SECRET_KEY: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+      WORKBENCH_OBJECT_STORAGE_ENABLED: "true"
+      WORKBENCH_OBJECT_STORAGE_INTERNAL_ENDPOINT: http://minio:9000
+      WORKBENCH_OBJECT_STORAGE_PUBLIC_ENDPOINT: ${KMP_MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      WORKBENCH_OBJECT_STORAGE_REGION: us-east-1
+      WORKBENCH_OBJECT_STORAGE_ACCESS_KEY: ${KMP_MINIO_ROOT_USER:-kmp-local}
+      WORKBENCH_OBJECT_STORAGE_SECRET_KEY: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+      WORKBENCH_OBJECT_STORAGE_PATH_STYLE: "true"
       KMP_BOOTSTRAP_ADMIN_USERNAME: ${KMP_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KMP_SECURE_COOKIES: ${KMP_SECURE_COOKIES:-true}
       KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
@@ -66,6 +83,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
       interval: 10s
@@ -83,11 +101,18 @@ services:
       SPRING_DATASOURCE_USERNAME: ${KMP_DB_USER:-kmp}
       SPRING_DATASOURCE_PASSWORD: ${KMP_DB_PASSWORD:-kmp-local-only}
       SPRING_FLYWAY_ENABLED: "false"
-      KMP_S3_ENDPOINT: http://minio:9000
-      KMP_S3_ACCESS_KEY: ${KMP_MINIO_ROOT_USER:-kmp-local}
-      KMP_S3_SECRET_KEY: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
-      KMP_CLAMAV_HOST: clamav
-      KMP_CLAMAV_PORT: 3310
+      WORKBENCH_OBJECT_STORAGE_ENABLED: "true"
+      WORKBENCH_OBJECT_STORAGE_INTERNAL_ENDPOINT: http://minio:9000
+      WORKBENCH_OBJECT_STORAGE_PUBLIC_ENDPOINT: ${KMP_MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      WORKBENCH_OBJECT_STORAGE_REGION: us-east-1
+      WORKBENCH_OBJECT_STORAGE_ACCESS_KEY: ${KMP_MINIO_ROOT_USER:-kmp-local}
+      WORKBENCH_OBJECT_STORAGE_SECRET_KEY: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+      WORKBENCH_OBJECT_STORAGE_PATH_STYLE: "true"
+      WORKBENCH_CONTENT_CLAMAV_ENABLED: "true"
+      WORKBENCH_CONTENT_CLAMAV_HOST: clamav
+      WORKBENCH_CONTENT_CLAMAV_PORT: "3310"
+      WORKBENCH_MATERIAL_INGEST_ENABLED: "true"
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST"
       KMP_AGENT_ENABLED: "false"
       KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
       KMP_ALLOWED_MODEL_HOSTS: ${KMP_ALLOWED_MODEL_HOSTS:-api.openai.com,dashscope.aliyuncs.com}
@@ -96,6 +121,7 @@ services:
       api: { condition: service_healthy }
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
       clamav: { condition: service_healthy }
     stop_grace_period: 45s
     networks: [backend]
