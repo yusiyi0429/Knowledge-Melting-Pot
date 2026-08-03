@@ -20,8 +20,6 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.9.0
-      - name: Verify preserved product sources
-        run: scripts/verify-product-baseline.sh
       - name: Validate OpenAPI
         run: pnpm --package=@redocly/cli@1.34.3 dlx redocly lint contracts/openapi.yaml
       - name: Validate Compose model

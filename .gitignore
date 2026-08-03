@@ -35,3 +35,8 @@ quarantine/
 artifacts/
 logs/
 tmp/
+
+# Local-only product source artifacts
+/知识萃取智能体工作台原型 v11 DevUI蓝.html
+/知识萃取智能体工作台 业务设计与开发说明.docx
+/docs/product/
