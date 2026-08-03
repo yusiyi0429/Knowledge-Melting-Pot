@@ -1,0 +1,1605 @@
+openapi: 3.1.0
+info:
+  title: Knowledge Melting Pot API
+  version: 1.0.0
+  description: Versioned API for auditable knowledge extraction and publication.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+paths:
+  /auth/csrf:
+    get:
+      summary: Issue the CSRF token used by browser mutation requests
+      security: []
+      operationId: getCsrfToken
+      responses:
+        '200':
+          description: CSRF token metadata; the matching XSRF-TOKEN cookie is also set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CsrfToken'
+        '400':
+          $ref: '#/components/responses/Problem'
+  /auth/login:
+    post:
+      summary: Log in with an administrator-managed account
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '204':
+          description: Authenticated; the server sets the session cookie.
+        '401':
+          $ref: '#/components/responses/Problem'
+  /auth/logout:
+    post:
+      summary: Invalidate the current session
+      operationId: logout
+      responses:
+        '204':
+          description: Session invalidated.
+        '401':
+          $ref: '#/components/responses/Problem'
+  /auth/me:
+    get:
+      summary: Get the current user and roles
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Problem'
+  /auth/password:
+    post:
+      summary: Change the current user's password and revoke all of their sessions
+      operationId: changeCurrentUserPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '204':
+          description: Password changed; all sessions are invalidated and the user must sign in again.
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+  /users:
+    get:
+      summary: List administrator-managed local accounts
+      operationId: listUsers
+      responses:
+        '200':
+          description: Local accounts without password hashes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Create a local account with a mandatory first-login password change
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: Created account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      summary: Update a local account's display name, activation state, or roles
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Updated account; role or activation changes revoke existing sessions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /scenes:
+    get:
+      summary: List scenes visible in the shared workspace
+      operationId: listScenes
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Scene page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScenePage'
+        '401':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Create a scene
+      operationId: createScene
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSceneRequest'
+      responses:
+        '201':
+          description: Created scene.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scene'
+        '400':
+          $ref: '#/components/responses/Problem'
+  /scenes/{sceneId}:
+    parameters:
+      - $ref: '#/components/parameters/SceneId'
+    get:
+      summary: Get a scene
+      operationId: getScene
+      responses:
+        '200':
+          description: Scene details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scene'
+        '404':
+          $ref: '#/components/responses/Problem'
+    put:
+      summary: Replace mutable scene metadata
+      operationId: updateScene
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSceneRequest'
+      responses:
+        '200':
+          description: Updated scene.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scene'
+        '404':
+          $ref: '#/components/responses/Problem'
+    delete:
+      summary: Delete a scene that has not entered a protected release workflow
+      operationId: deleteScene
+      responses:
+        '204':
+          description: Scene deleted.
+        '404':
+          $ref: '#/components/responses/Problem'
+  /scenes/{sceneId}/subscenes:
+    parameters:
+      - $ref: '#/components/parameters/SceneId'
+    get:
+      summary: List subscenes in a scene
+      operationId: listSubScenes
+      responses:
+        '200':
+          description: Subscenes ordered by creation time.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SubScene' }
+        '404':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Add a subscene
+      operationId: createSubScene
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubSceneRequest'
+      responses:
+        '201':
+          description: Created subscene.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubScene'
+        '400':
+          $ref: '#/components/responses/Problem'
+  /scenes/{sceneId}/rounds:
+    parameters:
+      - $ref: '#/components/parameters/SceneId'
+    get:
+      summary: List extraction rounds for every subscene in a scene
+      operationId: listExtractionRounds
+      responses:
+        '200':
+          description: Extraction rounds ordered by creation time.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ExtractionRound' }
+        '404':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Create the next extraction round for a subscene
+      operationId: createExtractionRound
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExtractionRoundRequest'
+      responses:
+        '201':
+          description: Created extraction round.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractionRound'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /materials/upload-intents:
+    post:
+      summary: Declare a quarantined material upload and report upload capability
+      operationId: createUploadIntent
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUploadIntentRequest'
+      responses:
+        '201':
+          description: Material declaration created. No presigned URL is implied by this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadIntent'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /materials/upload-intents/{intentId}/complete:
+    post:
+      summary: Record a client upload claim and queue validation only
+      operationId: completeUpload
+      parameters:
+        - name: intentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteUploadRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/AcceptedJob'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /materials/{materialId}:
+    get:
+      summary: Get immutable material metadata and its round bindings
+      operationId: getMaterial
+      parameters:
+        - name: materialId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Material metadata and partitioned bindings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Material'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /subscenes/{subSceneId}/extraction-jobs:
+    post:
+      summary: Start a knowledge extraction job
+      operationId: startExtraction
+      parameters:
+        - $ref: '#/components/parameters/SubSceneId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartExtractionRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/AcceptedJob'
+        '400':
+          $ref: '#/components/responses/Problem'
+  /subscenes/{subSceneId}/asset-generation-jobs:
+    post:
+      summary: Generate one or more knowledge assets
+      operationId: generateAssets
+      parameters:
+        - $ref: '#/components/parameters/SubSceneId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateAssetsRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/AcceptedJob'
+        '400':
+          $ref: '#/components/responses/Problem'
+  /jobs/{jobId}:
+    get:
+      summary: Get durable job state
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Durable job state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /jobs/{jobId}/events:
+    get:
+      summary: Stream ordered replayable job events
+      operationId: streamJobEvents
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ordered and replayable job events.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/JobEventEnvelope'
+                description: >-
+                  SSE frames named stage-started, progress, preview, warning, completed, or failed.
+                  Every data field is a serialized JobEventEnvelope and Last-Event-ID is the numeric sequence.
+        '404':
+          $ref: '#/components/responses/Problem'
+  /jobs/{jobId}/cancel:
+    post:
+      summary: Request cooperative job cancellation
+      operationId: cancelJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          $ref: '#/components/responses/AcceptedJob'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /jobs/{jobId}/retry:
+    post:
+      summary: Retry a failed job
+      operationId: retryJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          $ref: '#/components/responses/AcceptedJob'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /knowledge-documents/{documentId}:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      summary: Get the current knowledge document revision
+      operationId: getKnowledgeDocument
+      responses:
+        '200':
+          description: Current document revision.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeDocument'
+        '404':
+          $ref: '#/components/responses/Problem'
+    put:
+      summary: Validate and save a new document revision
+      operationId: saveKnowledgeDocument
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveDocumentRequest'
+      responses:
+        '200':
+          description: Newly created immutable revision.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeDocument'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /knowledge-documents/{documentId}/revisions:
+    get:
+      summary: List immutable document revisions
+      operationId: listDocumentRevisions
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Immutable revision history.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DocumentRevisionSummary'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /knowledge-documents/{documentId}/alignment-jobs:
+    post:
+      summary: Start an AI alignment proposal job
+      operationId: startAlignment
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartAlignmentRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/AcceptedJob'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+  /alignment-proposals/{proposalId}:
+    get:
+      summary: Get an immutable alignment proposal
+      operationId: getAlignmentProposal
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Immutable proposal plus separately recorded adoption metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlignmentProposal'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /alignment-proposals/{proposalId}/adopt:
+    post:
+      summary: Adopt a proposal against its base revision
+      operationId: adoptAlignmentProposal
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Proposal applied as a new document revision.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeDocument'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+  /scenes/{sceneId}/release-validations:
+    post:
+      summary: Validate cumulative release readiness
+      operationId: validateRelease
+      parameters:
+        - $ref: '#/components/parameters/SceneId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReleaseRequest'
+      responses:
+        '200':
+          description: Release readiness report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseValidation'
+        '412':
+          $ref: '#/components/responses/Problem'
+  /scenes/{sceneId}/releases:
+    post:
+      summary: Publish an immutable cumulative scene release
+      operationId: createRelease
+      parameters:
+        - $ref: '#/components/parameters/SceneId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReleaseRequest'
+      responses:
+        '201':
+          description: Immutable cumulative scene release.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+  /releases/{releaseId}:
+    get:
+      summary: Get immutable release metadata
+      operationId: getRelease
+      parameters:
+        - name: releaseId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Immutable release metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /releases/{releaseId}/manifest:
+    get:
+      summary: Get an immutable release manifest
+      operationId: getReleaseManifest
+      parameters:
+        - name: releaseId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Immutable release manifest.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseManifest'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /model-connections:
+    get:
+      summary: List model connections without exposing credentials
+      description: ADMIN only. Credentials and encrypted envelopes are never returned.
+      operationId: listModelConnections
+      responses:
+        '200':
+          description: Model connections with write-only credential state represented as a boolean.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelConnection'
+        '403':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Create a model connection
+      description: ADMIN only. The credential is write-only and envelope-encrypted before persistence.
+      operationId: createModelConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateModelConnectionRequest'
+      responses:
+        '201':
+          description: Created model connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConnection'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /model-connections/{modelConnectionId}:
+    parameters:
+      - $ref: '#/components/parameters/ModelConnectionId'
+    get:
+      summary: Get a model connection without exposing its credential
+      description: ADMIN only.
+      operationId: getModelConnection
+      responses:
+        '200':
+          description: Model connection metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConnection'
+        '404':
+          $ref: '#/components/responses/Problem'
+    put:
+      summary: Replace mutable model connection metadata
+      description: ADMIN only. Omitting credential retains it; clearCredential removes it.
+      operationId: updateModelConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateModelConnectionRequest'
+      responses:
+        '200':
+          description: Updated model connection metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConnection'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+    delete:
+      summary: Soft-delete a model connection
+      description: ADMIN only. Existing immutable config versions remain available for release traceability.
+      operationId: deleteModelConnection
+      responses:
+        '204':
+          description: Model connection disabled and soft-deleted.
+        '404':
+          $ref: '#/components/responses/Problem'
+  /model-connections/{modelConnectionId}/connection-tests:
+    parameters:
+      - $ref: '#/components/parameters/ModelConnectionId'
+    post:
+      summary: Revalidate model connection safety policy
+      description: ADMIN only. The default implementation performs no external network request and sends no credential.
+      operationId: testModelConnection
+      responses:
+        '200':
+          description: Offline safety validation result; this is not proof of provider connectivity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConnectionTestResult'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /model-connections/{modelConnectionId}/config-versions:
+    parameters:
+      - $ref: '#/components/parameters/ModelConnectionId'
+    get:
+      summary: List immutable model configuration versions
+      description: ADMIN only.
+      operationId: listModelConfigVersions
+      responses:
+        '200':
+          description: Versions ordered newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelConfigVersion'
+        '404':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Append an immutable model configuration version
+      description: ADMIN only. Existing versions are never updated in place.
+      operationId: createModelConfigVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateModelConfigVersionRequest'
+      responses:
+        '201':
+          description: Appended immutable model configuration version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConfigVersion'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /model-config-versions/{modelConfigVersionId}:
+    parameters:
+      - $ref: '#/components/parameters/ModelConfigVersionId'
+    get:
+      summary: Get an immutable model configuration version
+      description: ADMIN only.
+      operationId: getModelConfigVersion
+      responses:
+        '200':
+          description: Immutable model configuration version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConfigVersion'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /audit-events:
+    get:
+      summary: List redacted audit events
+      operationId: listAuditEvents
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Redacted audit event page.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEvent'
+        '403':
+          $ref: '#/components/responses/Problem'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: KMP_SESSION
+  parameters:
+    SceneId:
+      name: sceneId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SubSceneId:
+      name: subSceneId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ModelConnectionId:
+      name: modelConnectionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ModelConfigVersionId:
+      name: modelConfigVersionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Size:
+      name: size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+  responses:
+    AcceptedJob:
+      description: Command accepted as a durable job.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AcceptedJob'
+    Problem:
+      description: RFC 7807 problem response.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 100
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+          writeOnly: true
+    CsrfToken:
+      type: object
+      additionalProperties: false
+      required: [headerName, parameterName, token]
+      properties:
+        headerName: { type: string }
+        parameterName: { type: string }
+        token: { type: string, writeOnly: true }
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 128
+          writeOnly: true
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+          writeOnly: true
+    CreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [username, displayName, initialPassword, roles]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 100
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$'
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 200
+        initialPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+          writeOnly: true
+        roles:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [OPERATOR, PUBLISHER, ADMIN]
+    UpdateUserRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 200
+        enabled: { type: boolean }
+        roles:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [OPERATOR, PUBLISHER, ADMIN]
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, username, displayName, roles, enabled, mustChangePassword]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        displayName: { type: string }
+        roles:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [OPERATOR, PUBLISHER, ADMIN]
+        enabled: { type: boolean }
+        mustChangePassword: { type: boolean }
+    Scene:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ScenePage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Scene' }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer, format: int64 }
+    CreateSceneRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 10000 }
+    UpdateSceneRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 10000 }
+    CreateSubSceneRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 10000 }
+    SubScene:
+      type: object
+      additionalProperties: false
+      required: [id, sceneId, name, description, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        sceneId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateExtractionRoundRequest:
+      type: object
+      additionalProperties: false
+      required: [subSceneId]
+      properties:
+        subSceneId: { type: string, format: uuid }
+    ExtractionRound:
+      type: object
+      additionalProperties: false
+      required: [id, subSceneId, roundNumber, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        roundNumber: { type: integer, minimum: 1 }
+        status:
+          type: string
+          enum: [DRAFT, PROCESSING, READY, FAILED, SUPERSEDED]
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    MaterialPartition:
+      type: string
+      enum: [SOURCE, LABELED_TRAIN, LABELED_HOLDOUT]
+    MaterialShareScope:
+      type: string
+      enum: [ROUND, SUBSCENE, SCENE]
+    CreateUploadIntentRequest:
+      type: object
+      additionalProperties: false
+      required: [fileName, sizeBytes, mediaType, sha256, roundId, partition, shareScope]
+      properties:
+        fileName: { type: string, minLength: 1, maxLength: 255 }
+        sizeBytes: { type: integer, format: int64, minimum: 1, maximum: 209715200 }
+        mediaType:
+          type: string
+          enum:
+            - application/pdf
+            - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+            - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+            - text/plain
+        sha256: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        roundId: { type: string, format: uuid }
+        subSceneIds:
+          type: array
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        partition: { $ref: '#/components/schemas/MaterialPartition' }
+        shareScope: { $ref: '#/components/schemas/MaterialShareScope' }
+        regulatorySource: { type: boolean, default: false }
+    UploadIntent:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - materialId
+        - objectKey
+        - materialStatus
+        - uploadMode
+        - capabilityStatus
+        - uploadUrlAvailable
+        - maxBytes
+        - supportedFormats
+        - completionBehavior
+        - messageCode
+      properties:
+        id: { type: string, format: uuid }
+        materialId: { type: string, format: uuid }
+        objectKey: { type: string }
+        materialStatus: { type: string, enum: [PENDING_UPLOAD] }
+        uploadMode: { type: string, enum: [DECLARATION_ONLY] }
+        capabilityStatus: { type: string, enum: [OBJECT_STORAGE_NOT_CONFIGURED] }
+        uploadUrlAvailable: { type: boolean, const: false }
+        maxBytes: { type: integer, format: int64, const: 209715200 }
+        supportedFormats:
+          type: array
+          prefixItems:
+            - { type: string, const: pdf }
+            - { type: string, const: docx }
+            - { type: string, const: xlsx }
+            - { type: string, const: txt }
+          items: false
+        completionBehavior: { type: string, enum: [QUEUES_VALIDATION_ONLY] }
+        messageCode: { type: string, const: material.upload.object-storage-not-configured }
+    CompleteUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [etag]
+      properties:
+        etag: { type: string, minLength: 1, maxLength: 200 }
+    MaterialStatus:
+      type: string
+      enum: [PENDING_UPLOAD, UPLOADED, SCANNING, READY, FAILED, INACTIVE]
+    Material:
+      type: object
+      additionalProperties: false
+      required: [id, fileName, format, mediaType, objectKey, sha256, sizeBytes, status, bindings]
+      properties:
+        id: { type: string, format: uuid }
+        fileName: { type: string }
+        format: { type: string, enum: [PDF, DOCX, XLSX, TXT] }
+        mediaType: { type: string }
+        objectKey: { type: string }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        sizeBytes: { type: integer, format: int64, minimum: 1, maximum: 209715200 }
+        status: { $ref: '#/components/schemas/MaterialStatus' }
+        bindings:
+          type: array
+          items: { $ref: '#/components/schemas/RoundMaterial' }
+    RoundMaterial:
+      type: object
+      additionalProperties: false
+      required: [id, roundId, subSceneId, partition, shareScope, regulatorySource, active]
+      properties:
+        id: { type: string, format: uuid }
+        roundId: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        partition: { $ref: '#/components/schemas/MaterialPartition' }
+        shareScope: { $ref: '#/components/schemas/MaterialShareScope' }
+        regulatorySource: { type: boolean }
+        active: { type: boolean }
+    StartExtractionRequest:
+      type: object
+      additionalProperties: false
+      required: [roundId, modelConfigVersionId, skillVersionId]
+      properties:
+        roundId: { type: string, format: uuid }
+        modelConfigVersionId: { type: string, format: uuid }
+        skillVersionId: { type: string, format: uuid }
+    AssetType:
+      type: string
+      enum: [RULE_CATALOG, DECISION_FLOW, SKILL_PACKAGE, QA_PAIRS, EVALUATION_SET]
+    GenerateAssetsRequest:
+      type: object
+      additionalProperties: false
+      required: [documentRevisionId, types]
+      properties:
+        documentRevisionId: { type: string, format: uuid }
+        types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/AssetType' }
+    StartAlignmentRequest:
+      type: object
+      additionalProperties: false
+      description: Schedules alignment only; document bodies and arbitrary parameters are not accepted.
+      required: [baseRevisionId, action, regulatoryMaterialIds]
+      properties:
+        baseRevisionId: { type: string, format: uuid }
+        action:
+          type: string
+          enum: [CONSISTENCY, REGULATORY, GAP_ANALYSIS, REWRITE]
+        regulatoryMaterialIds:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          description: Required and non-empty only for REGULATORY; every item must be regulatory and non-HOLDOUT.
+          items: { type: string, format: uuid }
+    AlignmentProposal:
+      type: object
+      additionalProperties: false
+      required: [id, documentId, baseRevisionId, baseEtag, action, status, structuredPatchJson,
+        reason, sourceRefsJson, regulatoryMaterialIdsJson, createdBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        documentId: { type: string, format: uuid }
+        baseRevisionId: { type: string, format: uuid }
+        baseEtag: { type: string }
+        action: { type: string, enum: [CONSISTENCY, REGULATORY, GAP_ANALYSIS, REWRITE] }
+        status: { type: string, enum: [READY, ADOPTED] }
+        structuredPatchJson:
+          type: string
+          description: Canonical JSON limited to the replaceMarkdown operation in this milestone.
+        reason: { type: string }
+        sourceRefsJson: { type: string }
+        regulatoryMaterialIdsJson: { type: string }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        adoptedRevisionId: { type: [string, 'null'], format: uuid }
+        adoptedBy: { type: [string, 'null'], format: uuid }
+        adoptedAt: { type: [string, 'null'], format: date-time }
+    AcceptedJob:
+      type: object
+      required: [jobId, status, statusUrl, eventsUrl]
+      properties:
+        jobId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED]
+        statusUrl: { type: string }
+        eventsUrl: { type: string }
+        resourceType: { type: [string, 'null'] }
+        resourceId: { type: [string, 'null'], format: uuid }
+    Job:
+      type: object
+      required: [id, type, status, attempt, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [INGEST, EXTRACT, REEXTRACT, ALIGN, GENERATE_ASSET, GENERATE_ALL, SCENE_EXPLORE, EVALUATE]
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED]
+        stage: { type: [string, 'null'] }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+        attempt: { type: integer, minimum: 0 }
+        errorCode: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    JobEventEnvelope:
+      type: object
+      additionalProperties: false
+      required: [eventId, sequence, jobId, stage, percent, messageCode, traceId, timestamp, message]
+      properties:
+        eventId: { type: string, pattern: '^[0-9]+$' }
+        sequence: { type: integer, format: int64, minimum: 0 }
+        jobId: { type: string, format: uuid }
+        stage: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+        messageCode: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
+        traceId: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
+        timestamp: { type: string, format: date-time }
+        message: { type: string }
+    SourceRef:
+      type: object
+      required: [materialId, materialSha256, locator]
+      properties:
+        materialId: { type: string, format: uuid }
+        materialSha256: { type: string }
+        locator: { type: string, description: "Page, paragraph, sheet/row or line locator." }
+        excerptHash: { type: [string, 'null'] }
+    KnowledgeDocument:
+      type: object
+      required: [id, subSceneId, revisionId, revisionNumber, contentMd, contentHash, sourceRefs, etag]
+      properties:
+        id: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        revisionId: { type: string, format: uuid }
+        revisionNumber: { type: integer, minimum: 1 }
+        contentMd: { type: string }
+        contentHash: { type: string }
+        finalized: { type: boolean }
+        sourceRefs:
+          type: array
+          items: { $ref: '#/components/schemas/SourceRef' }
+        etag: { type: string }
+    SaveDocumentRequest:
+      type: object
+      additionalProperties: false
+      required: [contentMd, finalize]
+      properties:
+        subSceneId:
+          type: [string, 'null']
+          format: uuid
+          description: Required only when creating the first revision.
+        contentMd: { type: string, minLength: 1 }
+        revisionNote: { type: string, maxLength: 500 }
+        finalize: { type: boolean, default: false }
+    DocumentRevisionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, revisionNumber, contentHash, createdBy, finalized, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        revisionNumber: { type: integer }
+        contentHash: { type: string }
+        note: { type: [string, 'null'] }
+        createdBy: { type: string, format: uuid }
+        finalized: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    CreateReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [tag, selectedSubSceneIds, note, confirmed, expectedBaseReleaseId]
+      properties:
+        tag: { type: string, pattern: '^v[0-9]+\.[0-9]+(?:\.[0-9]+)?$' }
+        selectedSubSceneIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        note: { type: string, minLength: 1, maxLength: 2000 }
+        expectedBaseReleaseId: { type: [string, 'null'], format: uuid }
+        confirmed: { type: boolean, const: true }
+    ReleaseValidation:
+      type: object
+      required: [ready, coverage, baseReleaseId, selected, carriedForward, missing, blockers, warnings]
+      properties:
+        ready: { type: boolean }
+        coverage: { type: string, enum: [PARTIAL, FULL] }
+        baseReleaseId: { type: [string, 'null'], format: uuid }
+        selected:
+          type: array
+          items: { type: string, format: uuid }
+        carriedForward:
+          type: array
+          items: { type: string, format: uuid }
+        missing:
+          type: array
+          items: { type: string, format: uuid }
+        blockers:
+          type: array
+          items: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+    Release:
+      type: object
+      required: [id, sceneId, tag, coverage, note, previousReleaseId, manifestSha256, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        sceneId: { type: string, format: uuid }
+        tag: { type: string }
+        coverage: { type: string, enum: [PARTIAL, FULL] }
+        note: { type: string }
+        previousReleaseId: { type: [string, 'null'], format: uuid }
+        manifestSha256: { type: string }
+        createdAt: { type: string, format: date-time }
+    ReleaseManifest:
+      type: object
+      description: The sha256 field hashes the canonical JSON representation with the sha256 property omitted.
+      required: [schemaVersion, releaseId, sceneId, tag, coverage, note, generatedAt, previousReleaseId, subScenes, sha256]
+      properties:
+        schemaVersion: { type: string, const: '1.0' }
+        releaseId: { type: string, format: uuid }
+        sceneId: { type: string, format: uuid }
+        tag: { type: string }
+        coverage: { type: string, enum: [PARTIAL, FULL] }
+        note: { type: string }
+        generatedAt: { type: string, format: date-time }
+        previousReleaseId: { type: [string, 'null'], format: uuid }
+        subScenes:
+          type: array
+          items:
+            type: object
+            required: [subSceneId, status]
+            properties:
+              subSceneId: { type: string, format: uuid }
+              status: { type: string, enum: [SELECTED, CARRIED_FORWARD, MISSING] }
+              sourceReleaseId: { type: [string, 'null'], format: uuid }
+              documentRevisionId: { type: [string, 'null'], format: uuid }
+              assets:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [assetId, assetType, assetVersion, documentRevisionId, objectKey, checksum]
+                  properties:
+                    assetId: { type: string, format: uuid }
+                    assetType:
+                      type: string
+                      enum: [RULE_CATALOG, DECISION_FLOW, SKILL_PACKAGE, QA_PAIRS, EVALUATION_SET]
+                    assetVersion: { type: integer, minimum: 1 }
+                    documentRevisionId: { type: string, format: uuid }
+                    objectKey: { type: string }
+                    checksum: { type: string }
+        sha256: { type: string }
+    ModelProvider:
+      type: string
+      enum: [OPENAI_COMPATIBLE, DASHSCOPE]
+    ModelConnectionValidationStatus:
+      type: string
+      enum: [UNTESTED, CONFIGURATION_VALIDATED]
+    ModelConnection:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - provider
+        - baseUrl
+        - enabled
+        - credentialConfigured
+        - validationStatus
+        - createdAt
+        - updatedAt
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        provider: { $ref: '#/components/schemas/ModelProvider' }
+        baseUrl: { type: string, format: uri, pattern: '^https://' }
+        enabled: { type: boolean }
+        credentialConfigured:
+          type: boolean
+          description: Indicates only whether a credential exists; the credential and envelope are never readable.
+        validationStatus: { $ref: '#/components/schemas/ModelConnectionValidationStatus' }
+        lastValidatedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateModelConnectionRequest:
+      type: object
+      additionalProperties: false
+      required: [name, provider, baseUrl, enabled]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        provider: { $ref: '#/components/schemas/ModelProvider' }
+        baseUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+          pattern: '^https://'
+          description: Must exactly match an administrator-maintained host whitelist and resolve only to public addresses.
+        credential:
+          type: string
+          maxLength: 8192
+          writeOnly: true
+        enabled: { type: boolean }
+    UpdateModelConnectionRequest:
+      type: object
+      additionalProperties: false
+      required: [name, provider, baseUrl, enabled]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        provider: { $ref: '#/components/schemas/ModelProvider' }
+        baseUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+          pattern: '^https://'
+          description: Must exactly match an administrator-maintained host whitelist and resolve only to public addresses.
+        credential:
+          type: string
+          maxLength: 8192
+          writeOnly: true
+        clearCredential:
+          type: boolean
+          default: false
+          description: Cannot be true when credential is supplied.
+        enabled: { type: boolean }
+    CreateModelConfigVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [modelId, temperature, maxOutputTokens]
+      properties:
+        modelId: { type: string, minLength: 1, maxLength: 300 }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        maxOutputTokens: { type: integer, minimum: 1, maximum: 1000000 }
+    ModelConfigVersion:
+      type: object
+      additionalProperties: false
+      required: [id, modelConnectionId, version, modelId, temperature, maxOutputTokens, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        modelConnectionId: { type: string, format: uuid }
+        version: { type: integer, minimum: 1 }
+        modelId: { type: string }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        maxOutputTokens: { type: integer, minimum: 1, maximum: 1000000 }
+        createdAt: { type: string, format: date-time }
+    ModelConnectionTestResult:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - networkAttempted
+        - connectivityVerified
+        - credentialConfigured
+        - messageCode
+        - testedAt
+      properties:
+        status: { type: string, const: CONFIGURATION_VALIDATED }
+        networkAttempted: { type: boolean, const: false }
+        connectivityVerified: { type: boolean, const: false }
+        credentialConfigured: { type: boolean }
+        messageCode: { type: string, const: model.configuration.validated-offline }
+        testedAt: { type: string, format: date-time }
+    AuditEvent:
+      type: object
+      required: [id, actorType, action, entityType, entityId, occurredAt, traceId]
+      properties:
+        id: { type: string, format: uuid }
+        actorType: { type: string, enum: [USER, SYSTEM, AGENT] }
+        actorDisplayName: { type: [string, 'null'] }
+        action: { type: string }
+        entityType: { type: string }
+        entityId: { type: string }
+        beforeHash: { type: [string, 'null'] }
+        afterHash: { type: [string, 'null'] }
+        occurredAt: { type: string, format: date-time }
+        traceId: { type: string }
+    Problem:
+      type: object
+      required: [type, title, status, code, traceId]
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        code: { type: string }
+        traceId: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }

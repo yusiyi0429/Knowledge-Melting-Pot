@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: knowledge-melting-pot-worker
+  main:
+    web-application-type: none
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/knowledge_melting_pot}
+    username: ${SPRING_DATASOURCE_USERNAME:kmp}
+    password: ${SPRING_DATASOURCE_PASSWORD:kmp-local-only}
+    hikari:
+      maximum-pool-size: 8
+      minimum-idle: 1
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  threads:
+    virtual:
+      enabled: true
+
+workbench:
+  worker:
+    id: ${HOSTNAME:worker}-${random.uuid}
+    lease-duration: ${KMP_JOB_LEASE_DURATION:PT2M}
+    poll-delay: ${KMP_JOB_POLL_DELAY_MS:1000}
+    max-concurrency: ${KMP_WORKER_CONCURRENCY:4}
+  agent:
+    enabled: ${KMP_AGENT_ENABLED:false}
+    provider: ${KMP_AGENT_PROVIDER:OPENAI_COMPATIBLE}
+    model-name: ${KMP_AGENT_MODEL_NAME:}
+    api-base: ${KMP_AGENT_API_BASE:}
+    api-key: ${KMP_AGENT_API_KEY:}
+    timeout: ${KMP_AGENT_TIMEOUT:PT1M}
+    temperature: ${KMP_AGENT_TEMPERATURE:0.2}
+  material-ingest:
+    enabled: ${KMP_MATERIAL_INGEST_ENABLED:false}
+
+logging:
+  level:
+    com.openjiuwen: WARN
+    com.openjiuwen.core.foundation.llm: WARN

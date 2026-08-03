@@ -1,0 +1,9 @@
+server:
+  servlet:
+    session:
+      cookie:
+        secure: ${KMP_SECURE_COOKIES:true}
+
+workbench:
+  security:
+    secure-cookies: ${KMP_SECURE_COOKIES:true}

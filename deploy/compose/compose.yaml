@@ -1,0 +1,127 @@
+name: knowledge-melting-pot
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ${KMP_DB_NAME:-knowledge_melting_pot}
+      POSTGRES_USER: ${KMP_DB_USER:-kmp}
+      POSTGRES_PASSWORD: ${KMP_DB_PASSWORD:-kmp-local-only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KMP_DB_USER:-kmp} -d ${KMP_DB_NAME:-knowledge_melting_pot}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${KMP_MINIO_ROOT_USER:-kmp-local}
+      MINIO_ROOT_PASSWORD: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+    volumes:
+      - object-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  clamav:
+    image: clamav/clamav:1.4.5-debian13-slim
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping 1 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/api.Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: compose
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${KMP_DB_NAME:-knowledge_melting_pot}
+      SPRING_DATASOURCE_USERNAME: ${KMP_DB_USER:-kmp}
+      SPRING_DATASOURCE_PASSWORD: ${KMP_DB_PASSWORD:-kmp-local-only}
+      KMP_S3_ENDPOINT: http://minio:9000
+      KMP_S3_ACCESS_KEY: ${KMP_MINIO_ROOT_USER:-kmp-local}
+      KMP_S3_SECRET_KEY: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+      KMP_BOOTSTRAP_ADMIN_USERNAME: ${KMP_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KMP_SECURE_COOKIES: ${KMP_SECURE_COOKIES:-true}
+      KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
+      KMP_ALLOWED_MODEL_HOSTS: ${KMP_ALLOWED_MODEL_HOSTS:-api.openai.com,dashscope.aliyuncs.com}
+    secrets:
+      - source: kmp_bootstrap_admin_password
+        target: workbench.bootstrap-admin.password
+      - kmp_model_master_key
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks: [backend, edge]
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker.Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: compose
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${KMP_DB_NAME:-knowledge_melting_pot}
+      SPRING_DATASOURCE_USERNAME: ${KMP_DB_USER:-kmp}
+      SPRING_DATASOURCE_PASSWORD: ${KMP_DB_PASSWORD:-kmp-local-only}
+      SPRING_FLYWAY_ENABLED: "false"
+      KMP_S3_ENDPOINT: http://minio:9000
+      KMP_S3_ACCESS_KEY: ${KMP_MINIO_ROOT_USER:-kmp-local}
+      KMP_S3_SECRET_KEY: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+      KMP_CLAMAV_HOST: clamav
+      KMP_CLAMAV_PORT: 3310
+      KMP_AGENT_ENABLED: "false"
+      KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
+      KMP_ALLOWED_MODEL_HOSTS: ${KMP_ALLOWED_MODEL_HOSTS:-api.openai.com,dashscope.aliyuncs.com}
+    secrets: [kmp_model_master_key]
+    depends_on:
+      api: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clamav: { condition: service_healthy }
+    stop_grace_period: 45s
+    networks: [backend]
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/web.Dockerfile
+    ports:
+      - "8088:80"
+    depends_on:
+      api: { condition: service_healthy }
+    networks: [edge]
+
+volumes:
+  postgres-data:
+  object-data:
+  clamav-data:
+
+networks:
+  backend:
+    internal: true
+  edge:
+
+secrets:
+  kmp_bootstrap_admin_password:
+    environment: KMP_BOOTSTRAP_ADMIN_PASSWORD
+  kmp_model_master_key:
+    environment: KMP_MODEL_MASTER_KEY

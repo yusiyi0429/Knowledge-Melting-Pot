@@ -1,0 +1,37 @@
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Java / Maven
+target/
+**/target/
+*.log
+.mvn/timing.properties
+
+# Node / frontend
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+coverage/
+**/coverage/
+playwright-report/
+test-results/
+output/playwright/
+
+# Runtime data
+data/
+uploads/
+quarantine/
+artifacts/
+logs/
+tmp/
