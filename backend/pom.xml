@@ -39,7 +39,7 @@
         <commons-collections4.version>4.4</commons-collections4.version>
         <jsonschema-generator.version>4.38.0</jsonschema-generator.version>
         <jackson-bom.version>2.21.4</jackson-bom.version>
-        <netty.version>4.1.135.Final</netty.version>
+        <netty.version>4.1.136.Final</netty.version>
         <postgresql.version>42.7.12</postgresql.version>
         <spring-framework.version>6.2.19</spring-framework.version>
         <tomcat.version>10.1.55</tomcat.version>
