@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.knowledgemeltingpot.workbench.application.port.MaterialParseException;
 import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
+import com.knowledgemeltingpot.workbench.domain.ChunkLocator;
 import com.knowledgemeltingpot.workbench.domain.MaterialFormat;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
@@ -62,7 +63,7 @@ class CompositeMaterialParserTest {
         var parsed = (MaterialParserPort.MaterialParseResult.Parsed) result;
         assertThat(parsed.segments()).hasSize(2);
         assertThat(parsed.segments().get(0).locator().type())
-                .isEqualTo(MaterialParserPort.LocatorType.PDF_PAGE_PARAGRAPH);
+                .isEqualTo(ChunkLocator.LocatorType.PDF_PAGE_PARAGRAPH);
         assertThat(parsed.segments().get(0).locator().page()).isEqualTo(1);
         assertThat(parsed.segments().get(0).text()).contains("First paragraph");
     }
@@ -98,9 +99,9 @@ class CompositeMaterialParserTest {
         var parsed = (MaterialParserPort.MaterialParseResult.Parsed) result;
         assertThat(parsed.segments().stream()
                 .map(MaterialParserPort.ParsedSegment::locator)
-                .map(MaterialParserPort.SegmentLocator::type))
-                .contains(MaterialParserPort.LocatorType.DOCX_PARAGRAPH,
-                        MaterialParserPort.LocatorType.DOCX_TABLE_CELL);
+                .map(ChunkLocator::type))
+                .contains(ChunkLocator.LocatorType.DOCX_PARAGRAPH,
+                        ChunkLocator.LocatorType.DOCX_TABLE_CELL);
     }
 
     @Test
@@ -119,7 +120,7 @@ class CompositeMaterialParserTest {
         var parsed = (MaterialParserPort.MaterialParseResult.Parsed) result;
         assertThat(parsed.segments()).hasSize(1);
         assertThat(parsed.segments().get(0).locator().type())
-                .isEqualTo(MaterialParserPort.LocatorType.XLSX_RANGE);
+                .isEqualTo(ChunkLocator.LocatorType.XLSX_RANGE);
         assertThat(parsed.segments().get(0).locator().sheet()).isEqualTo("Policies");
         assertThat(parsed.segments().get(0).text()).contains("Rule one");
     }
@@ -134,7 +135,7 @@ class CompositeMaterialParserTest {
 
         var parsed = (MaterialParserPort.MaterialParseResult.Parsed) result;
         assertThat(parsed.segments().get(0).locator().type())
-                .isEqualTo(MaterialParserPort.LocatorType.TXT_LINES);
+                .isEqualTo(ChunkLocator.LocatorType.TXT_LINES);
         assertThat(parsed.segments().get(0).text()).contains("Hello", "World");
     }
 

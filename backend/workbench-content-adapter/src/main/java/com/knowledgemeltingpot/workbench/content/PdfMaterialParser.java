@@ -2,6 +2,7 @@ package com.knowledgemeltingpot.workbench.content;
 
 import com.knowledgemeltingpot.workbench.application.port.MaterialParseException;
 import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
+import com.knowledgemeltingpot.workbench.domain.ChunkLocator;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -34,9 +35,9 @@ class PdfMaterialParser {
                     if (!trimmed.isEmpty()) {
                         totalText += trimmed.length();
                         segments.add(new MaterialParserPort.ParsedSegment(segments.size(),
-                                new MaterialParserPort.SegmentLocator(
-                                        MaterialParserPort.LocatorType.PDF_PAGE_PARAGRAPH,
-                                        page, lineIndex, null, null, null, null, null, null, null),
+                                new ChunkLocator(
+                                        ChunkLocator.LocatorType.PDF_PAGE_PARAGRAPH,
+                                        page, lineIndex, null, null, null, null, null, null, null, null),
                                 trimmed));
                         lineIndex++;
                     }

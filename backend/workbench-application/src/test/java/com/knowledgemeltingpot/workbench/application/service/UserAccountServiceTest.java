@@ -92,6 +92,44 @@ class UserAccountServiceTest {
     }
 
     @Test
+    void resetPasswordForcesFirstLoginChangeWithoutChangingRolesOrStatus() {
+        UserAccount account = account(Set.of(UserRole.OPERATOR), false);
+        UUID administratorId = UUID.randomUUID();
+        when(userRepository.findById(account.id())).thenReturn(Optional.of(account));
+        when(passwordHasher.hash("replacement password value")).thenReturn("{bcrypt}reset");
+        when(userRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        UserAccount reset = service.resetPassword(administratorId, account.id(), "replacement password value");
+
+        assertThat(reset.passwordHash()).isEqualTo("{bcrypt}reset");
+        assertThat(reset.mustChangePassword()).isTrue();
+        assertThat(reset.username()).isEqualTo(account.username());
+        assertThat(reset.roles()).containsExactly(UserRole.OPERATOR);
+        assertThat(reset.status()).isEqualTo(UserStatus.ACTIVE);
+    }
+
+    @Test
+    void administratorCannotResetTheirOwnPassword() {
+        UserAccount account = account(Set.of(UserRole.ADMIN), false);
+        when(userRepository.findById(account.id())).thenReturn(Optional.of(account));
+
+        assertThatThrownBy(() -> service.resetPassword(account.id(), account.id(), "replacement password value"))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("cannot reset their own password");
+    }
+
+    @Test
+    void resetPasswordRejectsAWeakPasswordWithoutWriting() {
+        UserAccount account = account(Set.of(UserRole.OPERATOR), false);
+        UUID administratorId = UUID.randomUUID();
+        when(userRepository.findById(account.id())).thenReturn(Optional.of(account));
+
+        assertThatThrownBy(() -> service.resetPassword(administratorId, account.id(), "too-short"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("between 12 and 128");
+    }
+
+    @Test
     void updatePersistsRolesAndActivationStateWithoutChangingPassword() {
         UserAccount account = account(Set.of(UserRole.OPERATOR), true);
         UUID administratorId = UUID.randomUUID();

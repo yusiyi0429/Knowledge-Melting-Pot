@@ -1,0 +1,23 @@
+# Local-only deterministic acceptance overlay for scripts/verify-knowledge-workflow.sh.
+# It never calls an external model and is isolated under project kmp-knowledge-check.
+name: knowledge-melting-pot-knowledge-check
+
+services:
+  minio:
+    ports: !override
+      - "127.0.0.1:19100:9000"
+      - "127.0.0.1:19101:9001"
+    networks:
+      - backend
+      - knowledge-check-edge
+
+  worker:
+    environment:
+      KMP_AGENT_ENABLED: "false"
+      KMP_AGENT_TEST_STUB_ENABLED: "true"
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST,EXTRACT,REEXTRACT,ALIGN,GENERATE_ASSET,GENERATE_ALL"
+
+networks:
+  # Docker 29+ requires a non-internal companion network for host-published
+  # MinIO ports used by the browser-style multipart upload in this check.
+  knowledge-check-edge:

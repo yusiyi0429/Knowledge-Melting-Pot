@@ -31,12 +31,32 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
                    rm.regulatory_source, rm.active, rm.created_at AS binding_created_at
             FROM material m
             JOIN round_material rm ON rm.material_id = m.id
+            WHERE m.status = 'READY' AND rm.active = TRUE
+              AND rm.sub_scene_id IN (
+                  SELECT ss.id FROM sub_scene ss
+                  WHERE ss.scene_id = (
+                      SELECT ss2.scene_id FROM sub_scene ss2 WHERE ss2.id = :subSceneId))
+              AND (
+                  (rm.share_scope = 'ROUND' AND rm.round_id = :roundId
+                      AND rm.sub_scene_id = :subSceneId)
+                  OR (rm.share_scope = 'SUBSCENE' AND rm.sub_scene_id = :subSceneId)
+                  OR rm.share_scope = 'SCENE')
+            """;
+    private static final String WORKBENCH_COLUMNS = """
+            SELECT m.id AS material_id, m.file_name, m.file_format, m.media_type, m.object_key,
+                   m.sha256, m.size_bytes, m.status AS material_status,
+                   m.created_at AS material_created_at, m.updated_at AS material_updated_at,
+                   rm.id AS binding_id, rm.round_id, rm.sub_scene_id, rm.partition, rm.share_scope,
+                   rm.regulatory_source, rm.active, rm.created_at AS binding_created_at
+            FROM material m
+            JOIN round_material rm ON rm.material_id = m.id
             WHERE rm.round_id = :roundId AND rm.sub_scene_id = :subSceneId
-              AND rm.active = TRUE AND m.status = 'READY'
+              AND rm.active = TRUE
             """;
     static final String KNOWLEDGE_PARTITIONS = " AND rm.partition IN ('SOURCE', 'LABELED_TRAIN')";
     static final String REGULATORY_ONLY = " AND rm.regulatory_source = TRUE";
     static final String HOLDOUT_PARTITION = " AND rm.partition = 'LABELED_HOLDOUT'";
+    static final String SELECTION_ORDER = " ORDER BY rm.created_at, m.id";
 
     private final JdbcClient jdbc;
 
@@ -234,22 +254,28 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
 
     @Override
     public List<MaterialSelection> findForExtraction(UUID roundId, UUID subSceneId) {
-        return select(SELECTION_COLUMNS + KNOWLEDGE_PARTITIONS, roundId, subSceneId);
+        return select(SELECTION_COLUMNS + KNOWLEDGE_PARTITIONS + SELECTION_ORDER, roundId, subSceneId);
+    }
+
+    @Override
+    public List<MaterialSelection> findWorkbenchMaterials(UUID roundId, UUID subSceneId) {
+        return select(WORKBENCH_COLUMNS, roundId, subSceneId);
     }
 
     @Override
     public List<MaterialSelection> findForAlignment(UUID roundId, UUID subSceneId) {
-        return select(SELECTION_COLUMNS + KNOWLEDGE_PARTITIONS + REGULATORY_ONLY, roundId, subSceneId);
+        return select(SELECTION_COLUMNS + KNOWLEDGE_PARTITIONS + REGULATORY_ONLY + SELECTION_ORDER,
+                roundId, subSceneId);
     }
 
     @Override
     public List<MaterialSelection> findForQa(UUID roundId, UUID subSceneId) {
-        return select(SELECTION_COLUMNS + KNOWLEDGE_PARTITIONS, roundId, subSceneId);
+        return select(SELECTION_COLUMNS + KNOWLEDGE_PARTITIONS + SELECTION_ORDER, roundId, subSceneId);
     }
 
     @Override
     public List<MaterialSelection> findForEvaluation(UUID roundId, UUID subSceneId) {
-        return select(SELECTION_COLUMNS + HOLDOUT_PARTITION, roundId, subSceneId);
+        return select(SELECTION_COLUMNS + HOLDOUT_PARTITION + SELECTION_ORDER, roundId, subSceneId);
     }
 
     private List<MaterialSelection> select(String sql, UUID roundId, UUID subSceneId) {

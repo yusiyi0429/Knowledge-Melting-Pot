@@ -5,14 +5,12 @@ import com.knowledgemeltingpot.workbench.api.security.CurrentUser;
 import com.knowledgemeltingpot.workbench.api.stream.JobEventStream;
 import com.knowledgemeltingpot.workbench.application.service.JobService;
 import com.knowledgemeltingpot.workbench.application.service.JobSubmission;
-import com.knowledgemeltingpot.workbench.application.service.SceneService;
+import com.knowledgemeltingpot.workbench.application.service.ExtractionService;
 import com.knowledgemeltingpot.workbench.domain.Job;
-import com.knowledgemeltingpot.workbench.domain.JobType;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import java.net.URI;
 import java.time.Instant;
-import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.http.MediaType;
@@ -34,14 +32,14 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class JobController {
     private static final Pattern PUBLIC_ERROR_CODE = Pattern.compile("[A-Z0-9_:-]{1,100}");
     private final JobService jobService;
-    private final SceneService sceneService;
+    private final ExtractionService extractionService;
     private final JobEventStream eventStream;
     private final CurrentUser currentUser;
 
-    public JobController(JobService jobService, SceneService sceneService, JobEventStream eventStream,
+    public JobController(JobService jobService, ExtractionService extractionService, JobEventStream eventStream,
             CurrentUser currentUser) {
         this.jobService = jobService;
-        this.sceneService = sceneService;
+        this.extractionService = extractionService;
         this.eventStream = eventStream;
         this.currentUser = currentUser;
     }
@@ -51,14 +49,9 @@ public class JobController {
             @Valid @RequestBody ExtractionJobRequest body,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
-        sceneService.getSubScene(subSceneId);
-        Map<String, Object> payload = Map.of(
-                "subSceneId", subSceneId,
-                "roundId", body.roundId(),
-                "modelConfigVersionId", body.modelConfigVersionId(),
-                "skillVersionId", body.skillVersionId());
-        JobSubmission submission = jobService.submit(JobType.EXTRACT, "SUB_SCENE", subSceneId, payload,
-                currentUser.id(authentication), idempotencyKey, RequestIdFilter.currentTraceId());
+        JobSubmission submission = extractionService.queue(subSceneId, body.roundId(), body.modelConfigVersionId(),
+                body.skillVersionId(), currentUser.id(authentication), idempotencyKey,
+                RequestIdFilter.currentTraceId());
         Job job = submission.job();
         URI status = URI.create("/api/v1/jobs/" + job.id());
         return ResponseEntity.accepted()

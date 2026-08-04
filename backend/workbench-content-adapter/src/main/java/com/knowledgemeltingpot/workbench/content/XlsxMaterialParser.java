@@ -2,6 +2,7 @@ package com.knowledgemeltingpot.workbench.content;
 
 import com.knowledgemeltingpot.workbench.application.port.MaterialParseException;
 import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
+import com.knowledgemeltingpot.workbench.domain.ChunkLocator;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
@@ -109,9 +110,9 @@ class XlsxMaterialParser {
                 text.append(String.join("\t", cells));
             }
             return new MaterialParserPort.ParsedSegment(ordinal,
-                    new MaterialParserPort.SegmentLocator(
-                            MaterialParserPort.LocatorType.XLSX_RANGE,
-                            null, null, sheetName, firstRow, lastRow, firstCol, lastCol, null, null),
+                    new ChunkLocator(
+                            ChunkLocator.LocatorType.XLSX_RANGE,
+                            null, null, null, sheetName, firstRow, lastRow, firstCol, lastCol, null, null),
                     text.toString());
         }
     }

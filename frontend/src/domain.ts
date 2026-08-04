@@ -94,34 +94,37 @@ export interface SkillSummary {
   packageHash: string;
 }
 
-export interface ModelConnection {
-  id: string;
-  name: string;
-  provider: string;
-  modelId: string;
-  baseUrl: string;
-  state: "CONNECTED" | "UNTESTED";
-  credentialConfigured: boolean;
-}
+export const ALLOWED_AUDIT_DETAIL_KEYS = new Set([
+  "revision", "revisionNumber", "contentHash", "hash", "jobId", "tag", "sceneId", "documentId",
+  "manifestHash", "manifestSha256", "version", "roundNumber", "modelConnectionId",
+  "credentialConfigured", "enabled", "status", "validationStatus", "networkAttempted",
+  "connectivityVerified", "partCount",
+]);
 
-export interface UserSummary {
-  id: string;
-  username: string;
-  name: string;
-  roles: Array<"OPERATOR" | "PUBLISHER" | "ADMIN">;
-  state: "ENABLED" | "DISABLED";
-  createdAt: string;
-}
+export type SafeAuditDetail = { key: string; value: string };
 
-export interface AuditRecord {
-  id: string;
-  at: string;
-  actor: string;
-  actorType: "USER" | "SYSTEM" | "AGENT";
-  action: string;
-  target: string;
-  revision: string;
-  traceId: string;
+/**
+ * Parses server audit details and returns only allowlisted scalar metadata.
+ * Unknown keys, nested objects, and malformed JSON are never surfaced.
+ */
+export function safeAuditDetails(detailsJson: string): SafeAuditDetail[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(detailsJson);
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return [];
+  }
+  const details: SafeAuditDetail[] = [];
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!ALLOWED_AUDIT_DETAIL_KEYS.has(key)) continue;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      details.push({ key, value: String(value) });
+    }
+  }
+  return details.sort((a, b) => a.key.localeCompare(b.key));
 }
 
 export const partitionLabels: Record<MaterialPartition, string> = {
@@ -135,9 +138,103 @@ export function releaseCanInclude(subscene: Subscene, assets: Asset[]): boolean 
 }
 
 export function toStatusTone(status: string): Tone {
-  if (["READY", "PUBLISHED", "CONNECTED", "ENABLED"].includes(status)) return "success";
-  if (["EXTRACTING", "GENERATING", "ALIGNING"].includes(status)) return "info";
+  if (["READY", "PUBLISHED", "CONNECTED", "ENABLED", "CONFIGURATION_VALIDATED"].includes(status)) return "success";
+  if (["EXTRACTING", "GENERATING", "ALIGNING", "SCANNING"].includes(status)) return "info";
   if (["BLOCKED", "PARTIALLY_PUBLISHED", "UNTESTED"].includes(status)) return "warning";
   if (["FAILED", "DISABLED"].includes(status)) return "danger";
   return "neutral";
+}
+
+export const MATERIAL_MAX_BYTES = 200 * 1024 * 1024;
+
+/**
+ * Canonical media type is derived from the allowed file extension, never from
+ * the browser-supplied File.type. Returns null for unsupported extensions.
+ */
+export function mediaTypeForFile(fileName: string): string | null {
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+  switch (extension) {
+    case "pdf": return "application/pdf";
+    case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "txt": return "text/plain";
+    default: return null;
+  }
+}
+
+export function validateMaterialFile(file: { name: string; size: number }): string | null {
+  if (mediaTypeForFile(file.name) === null) {
+    return "仅支持 PDF / DOCX / XLSX / TXT；.doc 与 .xls 不受支持。";
+  }
+  if (file.size === 0) {
+    return "不能上传 0 字节文件。";
+  }
+  if (file.size > MATERIAL_MAX_BYTES) {
+    return "文件不能超过 200MB。";
+  }
+  return null;
+}
+
+export const MATERIAL_STATUS_LABELS: Record<string, string> = {
+  PENDING_UPLOAD: "待上传",
+  UPLOADED: "已上传",
+  SCANNING: "校验中",
+  READY: "已就绪",
+  FAILED: "校验失败",
+  INACTIVE: "已失效",
+};
+
+export const ASSET_TYPE_LABELS: Record<string, string> = {
+  RULE_CATALOG: "规则清单",
+  DECISION_FLOW: "研判流程",
+  SKILL_PACKAGE: "Skill 包",
+  QA_PAIRS: "QA 对",
+  EVALUATION_SET: "评测集",
+};
+
+export const ASSET_STATUS_LABELS: Record<string, string> = {
+  PENDING: "待生成",
+  GENERATING: "生成中",
+  READY: "已就绪",
+  FAILED: "失败",
+  SUPERSEDED: "已取代",
+  BLOCKED: "前置缺失",
+};
+
+export const ASSET_TYPE_DESCRIPTIONS: Record<string, string> = {
+  RULE_CATALOG: "规则清单 JSON 与 XLSX，来自定稿文档。",
+  DECISION_FLOW: "可审计研判流程 MD / JSON / Mermaid，不含推理过程。",
+  SKILL_PACKAGE: "只读 Skill 资源包（SKILL.md / prompt / schema / manifest）。",
+  QA_PAIRS: "问答对 JSONL 与去重 / 锚点校验报告。",
+  EVALUATION_SET: "仅留出分区安全元数据，绝不包含正文。",
+};
+
+export function modelProviderLabel(provider: string): string {
+  return provider === "DASHSCOPE" ? "DashScope" : "OpenAI 兼容";
+}
+
+export function connectionValidationLabel(status: string): string {
+  return status === "CONFIGURATION_VALIDATED" ? "配置已校验" : "未校验";
+}
+
+export interface ConnectionTestSummary {
+  label: string;
+  note: string;
+}
+
+/**
+ * Renders the semantics returned by the connection-tests endpoint verbatim.
+ * The phase-one backend never makes a network call, so the UI must not claim
+ * real provider connectivity regardless of the labels used elsewhere.
+ */
+export function connectionTestSummary(result: {
+  networkAttempted: boolean;
+  connectivityVerified: boolean;
+}): ConnectionTestSummary {
+  const network = result.networkAttempted ? "已发起网络请求" : "未发起网络请求";
+  const connectivity = result.connectivityVerified ? "已确认供应商连通" : "未验证供应商连通（不代表真实可达）";
+  return {
+    label: result.connectivityVerified ? "连通已验证" : "配置安全校验通过",
+    note: `${network}；${connectivity}`,
+  };
 }

@@ -96,7 +96,9 @@ class MaterialServiceMultipartTest {
 
         assertThat(result.objectStorageConfigured()).isTrue();
         assertThat(result.uploadMode()).isEqualTo("MULTIPART_PRESIGNED");
-        assertThat(result.presignedUrls()).hasSize(2);
+        assertThat(result.presignedParts()).hasSize(2);
+        assertThat(result.presignedParts().get(0).partNumber()).isEqualTo(1);
+        assertThat(result.presignedParts().get(1).requiredHeaders()).isEmpty();
         assertThat(result.intent().uploadState()).isEqualTo(UploadState.INITIATED);
         assertThat(result.intent().partSize()).isEqualTo(8L * 1024 * 1024);
     }

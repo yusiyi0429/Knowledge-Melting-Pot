@@ -32,6 +32,9 @@ finish_runtime() {
   trap - 0 1 2 15
   if [ "$result" -ne 0 ]; then
     echo "RUNTIME_FAILED stage=$verify_stage" >&2
+    if [ -n "${worker_id:-}" ]; then
+      docker logs --tail 200 "$worker_id" >&2 2>&1 || true
+    fi
   fi
   cleanup_runtime
   exit "$result"
@@ -52,7 +55,9 @@ KMP_DB_NAME=${KMP_DB_NAME:-kmp_runtime_verify}
 KMP_DB_USER=${KMP_DB_USER:-kmp_runtime}
 KMP_BOOTSTRAP_ADMIN_USERNAME=admin
 KMP_SECURE_COOKIES=true
-export KMP_DB_NAME KMP_DB_USER KMP_DB_PASSWORD
+KMP_WEB_PORT=${KMP_RUNTIME_WEB_PORT:-18088}
+web_base_url="http://localhost:${KMP_WEB_PORT}"
+export KMP_DB_NAME KMP_DB_USER KMP_DB_PASSWORD KMP_WEB_PORT
 export KMP_BOOTSTRAP_ADMIN_USERNAME KMP_BOOTSTRAP_ADMIN_PASSWORD
 export KMP_MODEL_MASTER_KEY KMP_SECURE_COOKIES
 
@@ -68,6 +73,7 @@ docker compose -p "$verify_project" -f "$compose_file" \
 api_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q api)
 worker_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q worker)
 postgres_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q postgres)
+minio_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q minio)
 
 verify_stage=runtime-readiness
 ready=false
@@ -96,8 +102,30 @@ readiness=$(docker exec "$api_id" wget -qO- \
 [ "$readiness" = UP ]
 
 migrations=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
-  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6');")
-[ "$migrations" = '1:true,2:true,3:true,4:true,5:true,6:true' ]
+  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11');")
+[ "$migrations" = '1:true,2:true,3:true,4:true,5:true,6:true,7:true,8:true,9:true,10:true,11:true' ]
+
+knowledge_tables=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('extraction_run','extraction_map_result','extraction_reduce_result','document_revision_projection','document_revision_source_ref');")
+[ "$knowledge_tables" = '5' ]
+
+verify_stage=minio-cors
+cors_headers=$(docker exec "$minio_id" /usr/bin/curl -sS -D - -o /dev/null -X OPTIONS \
+  -H 'Origin: http://localhost:8088' \
+  -H 'Access-Control-Request-Method: PUT' \
+  -H 'Access-Control-Request-Headers: content-type,content-md5' \
+  http://127.0.0.1:9000/kmp-quarantine/runtime-cors-probe)
+printf '%s\n' "$cors_headers" | rg -i --quiet '^access-control-allow-origin: http://localhost:8088\r?$'
+printf '%s\n' "$cors_headers" | rg -i --quiet '^access-control-allow-methods: .*PUT'
+printf '%s\n' "$cors_headers" | rg -i --quiet '^access-control-allow-headers: .*content-type'
+rejected_cors_headers=$(docker exec "$minio_id" /usr/bin/curl -sS -D - -o /dev/null -X OPTIONS \
+  -H 'Origin: http://untrusted.example' \
+  -H 'Access-Control-Request-Method: PUT' \
+  http://127.0.0.1:9000/kmp-quarantine/runtime-cors-probe)
+if printf '%s\n' "$rejected_cors_headers" | rg -i --quiet '^access-control-allow-origin:'; then
+  echo "Unexpected CORS origin allowance." >&2
+  exit 1
+fi
 
 session_tables=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
   "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('spring_session','spring_session_attributes');")
@@ -112,7 +140,7 @@ admin_roles=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME
 
 verify_stage=secure-session-login
 csrf_json=$(curl -fsS -D "$csrf_headers" -c "$cookie_jar" \
-  http://localhost:8088/api/v1/auth/csrf)
+  "$web_base_url/api/v1/auth/csrf")
 csrf_header=$(printf '%s' "$csrf_json" | jq -er .headerName)
 csrf_token=$(printf '%s' "$csrf_json" | jq -er .token)
 rg -i --quiet '^set-cookie: XSRF-TOKEN=.*; Secure;' "$csrf_headers"
@@ -120,7 +148,7 @@ login_body=$(jq -cn '{username:env.KMP_BOOTSTRAP_ADMIN_USERNAME,password:env.KMP
 login_status=$(printf '%s' "$login_body" | curl -sS -D "$login_headers" \
   -o /dev/null -w '%{http_code}' -b "$cookie_jar" -c "$cookie_jar" \
   -H "$csrf_header: $csrf_token" -H 'Content-Type: application/json' \
-  --data-binary @- http://localhost:8088/api/v1/auth/login)
+  --data-binary @- "$web_base_url/api/v1/auth/login")
 [ "$login_status" = 204 ]
 rg -i --quiet '^set-cookie: KMP_SESSION=.*; Secure;' "$login_headers"
 session_rows=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
@@ -166,8 +194,8 @@ for secret_value in "$KMP_DB_PASSWORD" "$KMP_BOOTSTRAP_ADMIN_PASSWORD" "$KMP_MOD
   done
 done
 
-printf 'RUNTIME_OK readiness=%s migrations=%s admin=%s session_tables=%s login=%s session_rows=%s secure_cookies=true secret_leak=false\n' \
-  "$readiness" "$migrations" "$admin_state" "$session_tables" "$login_status" "$session_rows"
+printf 'RUNTIME_OK readiness=%s migrations=%s knowledge_tables=%s admin=%s session_tables=%s login=%s session_rows=%s secure_cookies=true secret_leak=false\n' \
+  "$readiness" "$migrations" "$knowledge_tables" "$admin_state" "$session_tables" "$login_status" "$session_rows"
 
 cleanup_runtime
 trap - 0 1 2 15

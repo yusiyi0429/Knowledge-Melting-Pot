@@ -9,6 +9,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -137,6 +138,30 @@ public class JdbcAssetRepository implements AssetRepository {
             throw new ConflictException("asset cannot transition to FAILED");
         }
         return find(assetId);
+    }
+
+    @Override
+    public Asset markBlocked(UUID assetId, String reason, Instant now) {
+        int updated = jdbc.sql("""
+                UPDATE asset SET status = 'BLOCKED', failure_reason = :reason, updated_at = :now
+                WHERE id = :id AND status IN ('PENDING', 'GENERATING')
+                """)
+                .param("id", assetId)
+                .param("reason", reason == null ? "" : reason)
+                .param("now", JdbcTimes.toJdbc(now))
+                .update();
+        if (updated != 1) {
+            throw new ConflictException("asset cannot transition to BLOCKED");
+        }
+        return find(assetId);
+    }
+
+    @Override
+    public Optional<Asset> findById(UUID assetId) {
+        return jdbc.sql("SELECT * FROM asset WHERE id = :id")
+                .param("id", assetId)
+                .query(JdbcAssetRepository::mapAsset)
+                .optional();
     }
 
     private void insert(Asset asset) {

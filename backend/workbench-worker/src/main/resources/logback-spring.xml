@@ -16,6 +16,12 @@
     <logger name="com.alibaba.dashscope" level="WARN"/>
     <logger name="com.openai" level="WARN"/>
     <logger name="okhttp3" level="WARN"/>
+    <!-- Boot's root logger suppresses message bodies to avoid leaking provider
+         payloads, but startup failure analysis contains only configuration and
+         bean diagnostics and must remain actionable in an isolated Worker. -->
+    <logger name="org.springframework.boot.diagnostics.LoggingFailureAnalysisReporter" level="ERROR" additivity="false">
+        <appender-ref ref="APP_CONSOLE"/>
+    </logger>
     <logger name="com.knowledgemeltingpot" level="INFO" additivity="false">
         <appender-ref ref="APP_CONSOLE"/>
     </logger>

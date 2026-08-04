@@ -5,6 +5,7 @@ import com.knowledgemeltingpot.workbench.api.http.RequestIdFilter;
 import com.knowledgemeltingpot.workbench.api.security.CurrentUser;
 import com.knowledgemeltingpot.workbench.application.service.DocumentService;
 import com.knowledgemeltingpot.workbench.domain.DocumentRevision;
+import com.knowledgemeltingpot.workbench.domain.KnowledgeIr;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -35,8 +36,8 @@ public class DocumentController {
 
     @GetMapping("/{documentId}")
     public ResponseEntity<KnowledgeDocumentResponse> get(@PathVariable UUID documentId) {
-        DocumentRevision revision = documentService.get(documentId);
-        return ResponseEntity.ok().eTag(revision.etag()).body(KnowledgeDocumentResponse.from(revision));
+        DocumentService.KnowledgeDocumentView view = documentService.getView(documentId);
+        return ResponseEntity.ok().eTag(view.revision().etag()).body(KnowledgeDocumentResponse.from(view));
     }
 
     @PutMapping("/{documentId}")
@@ -47,7 +48,8 @@ public class DocumentController {
         DocumentRevision revision = documentService.save(documentId, body.subSceneId(), body.contentMd(),
                 body.revisionNote(), body.finalizeRevision(), ifMatch, currentUser.id(authentication),
                 RequestIdFilter.currentTraceId());
-        return ResponseEntity.ok().eTag(revision.etag()).body(KnowledgeDocumentResponse.from(revision));
+        return ResponseEntity.ok().eTag(revision.etag())
+                .body(KnowledgeDocumentResponse.from(documentService.getView(documentId)));
     }
 
     @GetMapping("/{documentId}/revisions")
@@ -73,14 +75,41 @@ public class DocumentController {
             List<SourceRefResponse> sourceRefs,
             String etag) {
 
-        static KnowledgeDocumentResponse from(DocumentRevision revision) {
+        public static KnowledgeDocumentResponse from(DocumentService.KnowledgeDocumentView view) {
+            DocumentRevision revision = view.revision();
             return new KnowledgeDocumentResponse(revision.documentId(), revision.subSceneId(), revision.id(),
                     revision.revision(), revision.content(), revision.contentHash(), revision.finalized(),
-                    List.of(), revision.etag());
+                    view.sourceRefs().stream().map(SourceRefResponse::from).toList(), revision.etag());
+        }
+
+        /** Kept for isolated response-shape tests and legacy revisions without a projection. */
+        static KnowledgeDocumentResponse from(DocumentRevision revision) {
+            return from(new DocumentService.KnowledgeDocumentView(revision, null));
         }
     }
 
-    public record SourceRefResponse(UUID materialId, String materialSha256, String locator, String excerptHash) {
+    public record SourceRefResponse(
+            String code,
+            UUID materialId,
+            String materialSha256,
+            UUID chunkId,
+            String locatorType,
+            Integer page,
+            Integer paragraph,
+            Integer table,
+            String sheet,
+            Integer rowStart,
+            Integer rowEnd,
+            Integer colStart,
+            Integer colEnd,
+            Integer lineStart,
+            Integer lineEnd,
+            String excerptHash) {
+        static SourceRefResponse from(KnowledgeIr.SourceRef ref) {
+            return new SourceRefResponse(ref.code(), ref.materialId(), ref.materialSha256(), ref.chunkId(),
+                    ref.locatorType(), ref.page(), ref.paragraph(), ref.table(), ref.sheet(), ref.rowStart(),
+                    ref.rowEnd(), ref.colStart(), ref.colEnd(), ref.lineStart(), ref.lineEnd(), ref.excerptHash());
+        }
     }
 
     public record DocumentRevisionSummary(

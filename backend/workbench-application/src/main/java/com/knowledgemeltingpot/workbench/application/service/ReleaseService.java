@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -106,6 +107,18 @@ public class ReleaseService {
     public Release get(UUID releaseId) {
         return releaseRepository.find(releaseId)
                 .orElseThrow(() -> new NotFoundException("release not found: " + releaseId));
+    }
+
+    /**
+     * The current release baseline for a scene: the latest published release, if any.
+     * Clients use this to set expectedBaseReleaseId so cumulative releases stay
+     * optimistic-concurrency safe without weakening the server-side check.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Release> findLatestPublished(UUID sceneId) {
+        sceneRepository.findScene(sceneId)
+                .orElseThrow(() -> new NotFoundException("scene not found: " + sceneId));
+        return releaseRepository.findLatestPublished(sceneId);
     }
 
     private ReleasePlan buildPlan(UUID sceneId, ReleaseCommand command, boolean lockScene) {

@@ -67,4 +67,26 @@ class JobWorkerAcceptedTypesTest {
 
         verify(leases).claimNext(eq("test-worker"), eq(Set.of(JobType.INGEST)), any(), any());
     }
+
+    @Test
+    void assetGenerationTypesAreClaimableWhenExplicitlyAccepted() {
+        JobLeaseRepository leases = mock(JobLeaseRepository.class);
+        JobService jobs = mock(JobService.class);
+        JobHandler handler = mock(JobHandler.class);
+        when(handler.supports(JobType.GENERATE_ASSET)).thenReturn(true);
+        when(handler.supports(JobType.GENERATE_ALL)).thenReturn(true);
+        when(handler.supports(JobType.INGEST)).thenReturn(true);
+        when(leases.claimNext(any(), eq(Set.of(JobType.INGEST, JobType.GENERATE_ASSET, JobType.GENERATE_ALL)),
+                any(), any())).thenReturn(Optional.empty());
+        Clock clock = Clock.fixed(Instant.parse("2026-08-03T00:00:00Z"), ZoneOffset.UTC);
+
+        JobWorker worker = new JobWorker(leases, jobs, List.of(handler), jobExecutor, heartbeatExecutor,
+                clock, "test-worker", Duration.ofMinutes(2), 1, "INGEST,GENERATE_ASSET,GENERATE_ALL");
+        worker.poll();
+
+        verify(leases).claimNext(eq("test-worker"),
+                eq(Set.of(JobType.INGEST, JobType.GENERATE_ASSET, JobType.GENERATE_ALL)), any(), any());
+        verify(leases, never()).claimNext(any(), eq(Set.of(JobType.EXTRACT)), any(), any());
+        verify(leases, never()).claimNext(any(), eq(Set.of(JobType.ALIGN)), any(), any());
+    }
 }

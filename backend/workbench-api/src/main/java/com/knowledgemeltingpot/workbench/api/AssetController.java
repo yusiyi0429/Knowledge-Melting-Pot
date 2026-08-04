@@ -13,6 +13,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,6 +38,13 @@ public class AssetController {
     @GetMapping("/subscenes/{subSceneId}/assets")
     public List<Asset> list(@PathVariable UUID subSceneId) {
         return assetService.list(subSceneId);
+    }
+
+    @GetMapping("/assets/{assetId}/download")
+    public ResponseEntity<Void> download(@PathVariable UUID assetId) {
+        return ResponseEntity.status(HttpStatus.FOUND)
+                .location(URI.create(assetService.downloadUrl(assetId).toString()))
+                .build();
     }
 
     @PostMapping({"/subscenes/{subSceneId}/asset-generation-jobs",

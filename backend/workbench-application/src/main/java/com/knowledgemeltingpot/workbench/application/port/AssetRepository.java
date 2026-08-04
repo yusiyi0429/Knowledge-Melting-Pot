@@ -4,6 +4,7 @@ import com.knowledgemeltingpot.workbench.domain.Asset;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface AssetRepository {
@@ -15,6 +16,8 @@ public interface AssetRepository {
 
     List<Asset> findLatestReadyByScene(UUID sceneId);
 
+    Optional<Asset> findById(UUID assetId);
+
     Asset saveNextVersion(Asset asset);
 
     Asset beginGeneration(UUID subSceneId, AssetType type, UUID documentRevisionId, Instant now);
@@ -22,4 +25,6 @@ public interface AssetRepository {
     Asset markReady(UUID assetId, String objectKey, String checksum, Instant now);
 
     Asset markFailed(UUID assetId, String failureReason, Instant now);
+
+    Asset markBlocked(UUID assetId, String reason, Instant now);
 }

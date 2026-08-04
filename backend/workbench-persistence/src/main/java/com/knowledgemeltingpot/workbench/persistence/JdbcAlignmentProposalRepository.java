@@ -7,6 +7,7 @@ import com.knowledgemeltingpot.workbench.domain.AlignmentProposalStatus;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
@@ -68,6 +69,26 @@ public class JdbcAlignmentProposalRepository implements AlignmentProposalReposit
                 .param("proposalId", proposalId)
                 .query(JdbcAlignmentProposalRepository::mapProposal)
                 .optional();
+    }
+
+    @Override
+    public List<AlignmentProposal> findByDocument(UUID documentId) {
+        return jdbc.sql("""
+                SELECT p.id, p.document_id, p.base_revision_id, p.base_etag, p.action,
+                       CASE WHEN a.proposal_id IS NULL THEN p.status ELSE 'ADOPTED' END AS effective_status,
+                       p.structured_patch::text AS structured_patch,
+                       p.reason, p.source_refs::text AS source_refs,
+                       p.regulatory_material_ids::text AS regulatory_material_ids,
+                       p.created_by, p.created_at, a.revision_id AS adopted_revision_id,
+                       a.adopted_by, a.adopted_at
+                FROM alignment_proposal p
+                LEFT JOIN alignment_proposal_adoption a ON a.proposal_id = p.id
+                WHERE p.document_id = :documentId
+                ORDER BY p.created_at DESC
+                """)
+                .param("documentId", documentId)
+                .query(JdbcAlignmentProposalRepository::mapProposal)
+                .list();
     }
 
     @Override

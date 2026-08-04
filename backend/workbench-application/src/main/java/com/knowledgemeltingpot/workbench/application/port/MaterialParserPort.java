@@ -1,5 +1,6 @@
 package com.knowledgemeltingpot.workbench.application.port;
 
+import com.knowledgemeltingpot.workbench.domain.ChunkLocator;
 import com.knowledgemeltingpot.workbench.domain.MaterialFormat;
 import java.nio.file.Path;
 import java.util.List;
@@ -42,7 +43,7 @@ public interface MaterialParserPort {
         }
     }
 
-    record ParsedSegment(int ordinal, SegmentLocator locator, String text) {
+    record ParsedSegment(int ordinal, ChunkLocator locator, String text) {
         public ParsedSegment {
             if (ordinal < 0) {
                 throw new IllegalArgumentException("ordinal must not be negative");
@@ -54,31 +55,5 @@ public interface MaterialParserPort {
                 throw new IllegalArgumentException("text is required");
             }
         }
-    }
-
-    record SegmentLocator(
-            LocatorType type,
-            Integer page,
-            Integer paragraph,
-            String sheet,
-            Integer rowStart,
-            Integer rowEnd,
-            Integer colStart,
-            Integer colEnd,
-            Integer lineStart,
-            Integer lineEnd) {
-        public SegmentLocator {
-            if (type == null) {
-                throw new IllegalArgumentException("type is required");
-            }
-        }
-    }
-
-    enum LocatorType {
-        PDF_PAGE_PARAGRAPH,
-        DOCX_PARAGRAPH,
-        DOCX_TABLE_CELL,
-        XLSX_RANGE,
-        TXT_LINES
     }
 }

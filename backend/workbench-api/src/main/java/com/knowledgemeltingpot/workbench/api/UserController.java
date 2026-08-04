@@ -80,6 +80,17 @@ public class UserController {
         return UserResponse.from(updated);
     }
 
+    @PostMapping("/{userId}/password-reset")
+    public ResponseEntity<Void> resetPassword(@PathVariable UUID userId,
+            @Valid @RequestBody ResetUserPasswordRequest body, Authentication authentication) {
+        UUID actorId = currentUser.id(authentication);
+        UserAccount updated = userAccountService.resetPassword(actorId, userId, body.newPassword());
+        auditService.record(actorId, "USER_PASSWORD_RESET", "USER", updated.id(),
+                Map.of("mustChangePassword", true), RequestIdFilter.currentTraceId());
+        sessionRevocationService.revokeAll(updated.username());
+        return ResponseEntity.noContent().build();
+    }
+
     private Map<String, ?> auditDetails(UserAccount account) {
         return Map.of(
                 "enabled", account.status() == UserStatus.ACTIVE,
@@ -106,6 +117,14 @@ public class UserController {
 
         boolean hasChanges() {
             return displayName != null || enabled != null || roles != null;
+        }
+    }
+
+    public record ResetUserPasswordRequest(
+            @NotBlank @Size(min = 12, max = 128) String newPassword) {
+        @Override
+        public String toString() {
+            return "ResetUserPasswordRequest[newPassword=[REDACTED]]";
         }
     }
 }

@@ -1,6 +1,10 @@
 package com.knowledgemeltingpot.workbench.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.knowledgemeltingpot.workbench.application.port.ChunkEmbeddingRepository;
+import com.knowledgemeltingpot.workbench.application.port.ChunkRepository;
+import com.knowledgemeltingpot.workbench.application.port.EmbeddingPort;
+import com.knowledgemeltingpot.workbench.application.port.EmbeddingProfileVersionRepository;
 import com.knowledgemeltingpot.workbench.application.port.IngestCheckpointRepository;
 import com.knowledgemeltingpot.workbench.application.port.LeasedJob;
 import com.knowledgemeltingpot.workbench.application.port.MaterialBlobRepository;
@@ -8,10 +12,13 @@ import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
 import com.knowledgemeltingpot.workbench.application.port.VirusScanPort;
+import com.knowledgemeltingpot.workbench.domain.ChunkEmbedding;
+import com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion;
 import com.knowledgemeltingpot.workbench.domain.IngestStage;
 import com.knowledgemeltingpot.workbench.domain.JobType;
 import com.knowledgemeltingpot.workbench.domain.Material;
 import com.knowledgemeltingpot.workbench.domain.MaterialBlob;
+import com.knowledgemeltingpot.workbench.domain.MaterialChunk;
 import com.knowledgemeltingpot.workbench.domain.MaterialFormat;
 import com.knowledgemeltingpot.workbench.domain.MaterialIngestAttempt;
 import com.knowledgemeltingpot.workbench.domain.MaterialPartition;
@@ -27,11 +34,16 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -52,18 +64,29 @@ public class IngestMaterialJobHandler implements JobHandler {
     private final MaterialRepository materialRepository;
     private final MaterialBlobRepository blobRepository;
     private final IngestCheckpointRepository checkpointRepository;
+    private final ChunkRepository chunkRepository;
+    private final EmbeddingProfileVersionRepository embeddingProfileRepository;
+    private final ChunkEmbeddingRepository chunkEmbeddingRepository;
+    private final List<EmbeddingPort> embeddingPorts;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public IngestMaterialJobHandler(ObjectStoragePort objectStorage, VirusScanPort virusScan,
             MaterialParserPort parser, MaterialRepository materialRepository, MaterialBlobRepository blobRepository,
-            IngestCheckpointRepository checkpointRepository, ObjectMapper objectMapper, Clock clock) {
+            IngestCheckpointRepository checkpointRepository, ChunkRepository chunkRepository,
+            EmbeddingProfileVersionRepository embeddingProfileRepository,
+            ChunkEmbeddingRepository chunkEmbeddingRepository, List<EmbeddingPort> embeddingPorts,
+            ObjectMapper objectMapper, Clock clock) {
         this.objectStorage = objectStorage;
         this.virusScan = virusScan;
         this.parser = parser;
         this.materialRepository = materialRepository;
         this.blobRepository = blobRepository;
         this.checkpointRepository = checkpointRepository;
+        this.chunkRepository = chunkRepository;
+        this.embeddingProfileRepository = embeddingProfileRepository;
+        this.chunkEmbeddingRepository = chunkEmbeddingRepository;
+        this.embeddingPorts = List.copyOf(embeddingPorts);
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
@@ -147,51 +170,70 @@ public class IngestMaterialJobHandler implements JobHandler {
             checkpointRepository.updateStage(jobId, IngestStage.MALWARE_CLEAN);
             context.progress(45, "ARCHIVE_BUDGET_VERIFIED");
             checkpointRepository.updateStage(jobId, IngestStage.ARCHIVE_BUDGET_VERIFIED);
-            context.progress(55, "PARSED");
-
-            MaterialParserPort.MaterialParseResult parseResult = parser.parse(tempFile, material.format());
-            String parserName;
-            String parserVersion;
-            if (parseResult instanceof MaterialParserPort.MaterialParseResult.OcrRequired ocr) {
-                parserName = ocr.parserName();
-                parserVersion = ocr.parserVersion();
-                return fail(jobId, material.id(), IngestStage.PARSED, "OCR_REQUIRED", false, null);
-            }
-            MaterialParserPort.MaterialParseResult.Parsed parsed = (MaterialParserPort.MaterialParseResult.Parsed) parseResult;
-            parserName = parsed.parserName();
-            parserVersion = parsed.parserVersion();
-            checkpointRepository.updateStage(jobId, IngestStage.PARSED);
-            context.progress(75, "OBJECT_VERIFYING");
 
             SecurityPartition partition = securityPartition(material.id());
-            String cleanObjectKey = cleanObjectKey(partition, actualSha256, material.format());
+            MaterialBlob blob = blobRepository.findByPartitionAndSha256(partition, actualSha256).orElse(null);
+            String parserName;
+            String parserVersion;
+            List<MaterialChunk> chunks;
+            if (blob != null && chunkRepository.existsForBlob(blob.id())) {
+                // A previous run already committed chunks for this verified blob:
+                // reuse them instead of parsing the same content again.
+                parserName = blob.parserName();
+                parserVersion = blob.parserVersion();
+                chunks = chunkRepository.findByBlob(blob.id());
+                checkpointRepository.updateStage(jobId, IngestStage.CHUNKS_COMMITTED);
+                context.progress(80, "CHUNKS_COMMITTED");
+            } else {
+                context.progress(55, "PARSED");
+                MaterialParserPort.MaterialParseResult parseResult = parser.parse(tempFile, material.format());
+                if (parseResult instanceof MaterialParserPort.MaterialParseResult.OcrRequired ocr) {
+                    parserName = ocr.parserName();
+                    parserVersion = ocr.parserVersion();
+                    return fail(jobId, material.id(), IngestStage.PARSED, "OCR_REQUIRED", false, null);
+                }
+                MaterialParserPort.MaterialParseResult.Parsed parsed =
+                        (MaterialParserPort.MaterialParseResult.Parsed) parseResult;
+                parserName = parsed.parserName();
+                parserVersion = parsed.parserVersion();
+                checkpointRepository.updateStage(jobId, IngestStage.PARSED);
+                if (blob == null) {
+                    String cleanObjectKey = cleanObjectKey(partition, actualSha256, material.format());
+                    objectStorage.copyToVerified(ObjectStoragePort.StorageZone.QUARANTINE, material.objectKey(),
+                            targetZone(partition), cleanObjectKey);
+                    ObjectStoragePort.ObjectHead verifiedHead = objectStorage.head(targetZone(partition),
+                            cleanObjectKey);
+                    if (verifiedHead.sizeBytes() != payload.expectedSizeBytes()) {
+                        return fail(jobId, material.id(), IngestStage.OBJECT_VERIFIED,
+                                "VERIFIED_SIZE_MISMATCH", false, null);
+                    }
+                    try (InputStream verified = objectStorage.open(targetZone(partition), cleanObjectKey)) {
+                        if (!actualSha256.equals(sha256Bounded(verified))) {
+                            return fail(jobId, material.id(), IngestStage.OBJECT_VERIFIED,
+                                    "VERIFIED_SHA256_MISMATCH", false, null);
+                        }
+                    }
+                    blob = blobRepository.insert(new MaterialBlob(UUID.randomUUID(), partition, actualSha256,
+                            cleanObjectKey, verifiedHead.sizeBytes(), detectedMime, scan.engineVersion(),
+                            scan.signatureVersion(), parserName, parserVersion, now));
+                }
+                List<MaterialChunk> newChunks = toChunks(blob.id(), parserVersion, parsed.segments(), now);
+                chunkRepository.commitAll(blob.id(), parserVersion, newChunks);
+                chunks = chunkRepository.findByBlob(blob.id());
+                checkpointRepository.updateStage(jobId, IngestStage.CHUNKS_COMMITTED);
+                context.progress(80, "CHUNKS_COMMITTED");
+            }
+
+            commitEmbeddings(jobId, chunks, context);
+
+            context.progress(90, "OBJECT_VERIFYING");
             if (material.status() == MaterialStatus.READY) {
-                // A prior run committed the blob but lost its lease before succeeding;
-                // replay idempotently instead of re-verifying and re-committing.
-                MaterialBlob committed = blobRepository.findByPartitionAndSha256(partition, actualSha256)
-                        .orElse(null);
+                // A prior run committed the blob and chunks but lost its lease
+                // before succeeding; replay idempotently.
                 Instant replayAt = Instant.now(clock);
                 checkpointRepository.completeAttempt(jobId, IngestStage.OBJECT_VERIFIED, parserName, parserVersion,
                         replayAt);
-                return JobHandlingResult.success(committed == null ? "" : committed.id().toString());
-            }
-            MaterialBlob blob = blobRepository.findByPartitionAndSha256(partition, actualSha256).orElse(null);
-            if (blob == null) {
-                objectStorage.copyToVerified(ObjectStoragePort.StorageZone.QUARANTINE, material.objectKey(),
-                        targetZone(partition), cleanObjectKey);
-                ObjectStoragePort.ObjectHead verifiedHead = objectStorage.head(targetZone(partition), cleanObjectKey);
-                if (verifiedHead.sizeBytes() != payload.expectedSizeBytes()) {
-                    return fail(jobId, material.id(), IngestStage.OBJECT_VERIFIED, "VERIFIED_SIZE_MISMATCH", false, null);
-                }
-                try (InputStream verified = objectStorage.open(targetZone(partition), cleanObjectKey)) {
-                    if (!actualSha256.equals(sha256Bounded(verified))) {
-                        return fail(jobId, material.id(), IngestStage.OBJECT_VERIFIED,
-                                "VERIFIED_SHA256_MISMATCH", false, null);
-                    }
-                }
-                blob = blobRepository.insert(new MaterialBlob(UUID.randomUUID(), partition, actualSha256,
-                        cleanObjectKey, verifiedHead.sizeBytes(), detectedMime, scan.engineVersion(),
-                        scan.signatureVersion(), parserName, parserVersion, now));
+                return JobHandlingResult.success(blob.id().toString());
             }
             if (!materialRepository.updateBlobId(material.id(), blob.id(), MaterialStatus.UPLOADED, MaterialStatus.READY,
                     now)) {
@@ -212,6 +254,65 @@ public class IngestMaterialJobHandler implements JobHandler {
                 }
             }
         }
+    }
+
+    /**
+     * Embeds chunks only when a real profile and provider exist; otherwise a
+     * stable diagnostic is recorded and the material may still reach READY with
+     * its committed chunks. Vectors are never fabricated.
+     */
+    private void commitEmbeddings(UUID jobId, List<MaterialChunk> chunks, WorkerJobContext context) {
+        Optional<EmbeddingProfileVersion> profile = embeddingProfileRepository.findActive();
+        Optional<EmbeddingPort> provider = profile.flatMap(active -> embeddingPorts.stream()
+                .filter(port -> active.provider().equals(port.provider()))
+                .findFirst());
+        if (profile.isEmpty() || provider.isEmpty()) {
+            context.diagnostic(80, "CHUNKS_COMMITTED", "EMBEDDING_PROVIDER_UNCONFIGURED");
+            return;
+        }
+        List<ChunkEmbedding> embeddings = provider.orElseThrow().embed(chunks, profile.get());
+        validateEmbeddings(chunks, profile.get(), embeddings);
+        int present = chunkEmbeddingRepository.writeAll(embeddings);
+        if (present < chunks.size()) {
+            throw new IllegalStateException("embedding write incomplete: " + present + "/" + chunks.size()
+                    + " present");
+        }
+        checkpointRepository.updateStage(jobId, IngestStage.EMBEDDINGS_COMMITTED);
+        context.progress(86, "EMBEDDINGS_COMMITTED");
+    }
+
+    private void validateEmbeddings(List<MaterialChunk> chunks, EmbeddingProfileVersion profile,
+            List<ChunkEmbedding> embeddings) {
+        if (embeddings == null || embeddings.size() != chunks.size()) {
+            throw new IllegalStateException("embedding provider returned an incomplete chunk set");
+        }
+        Map<UUID, MaterialChunk> expected = chunks.stream()
+                .collect(Collectors.toUnmodifiableMap(MaterialChunk::id, Function.identity()));
+        Set<UUID> seen = new HashSet<>();
+        for (ChunkEmbedding embedding : embeddings) {
+            MaterialChunk chunk = expected.get(embedding.chunkId());
+            if (chunk == null || !seen.add(embedding.chunkId())
+                    || !profile.id().equals(embedding.profileVersionId())
+                    || profile.dimension() != embedding.dimension()
+                    || !chunk.contentHash().equals(embedding.contentHash())) {
+                throw new IllegalStateException("embedding provider returned an invalid chunk projection");
+            }
+        }
+    }
+
+    private List<MaterialChunk> toChunks(UUID blobId, String parserVersion,
+            List<MaterialParserPort.ParsedSegment> segments, Instant now) {
+        List<MaterialChunk> chunks = new ArrayList<>(segments.size());
+        for (MaterialParserPort.ParsedSegment segment : segments) {
+            chunks.add(MaterialChunk.fromParsed(UUID.randomUUID(), blobId, segment.ordinal(),
+                    sourceRefCode(blobId, segment.ordinal()), segment.locator(), segment.text(), parserVersion, now));
+        }
+        return chunks;
+    }
+
+    private String sourceRefCode(UUID blobId, int ordinal) {
+        String compact = blobId.toString().replace("-", "");
+        return "SRC-" + compact + "-" + ordinal;
     }
 
     private void downloadBounded(ObjectStoragePort.ObjectHead head, Path target, WorkerJobContext context)

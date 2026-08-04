@@ -11,7 +11,7 @@
 - MinIO/S3 for immutable source files, generated assets and release manifests.
 - `agent-core-java:0.1.13` isolated behind `workbench-agent-adapter`.
 
-The first runnable slice covers login, scenes/subscenes/rounds, durable jobs, material partition isolation, document revisions, alignment concurrency semantics, five asset states, and cumulative partial releases. Binary ingest/parsing, real knowledge generation, asset renderers, scene exploration and sandboxed Skill execution remain separately versioned capabilities.
+The runnable slices cover login, scenes/subscenes/rounds, durable jobs, secure MinIO ingest and parsing, holdout isolation, KnowledgeIR/Markdown revisions, resumable Map/Reduce extraction, structured alignment proposals, five asset states, and cumulative partial releases. Dynamic Agent mounts, dense retrieval, scene exploration and sandboxed Skill execution remain separately versioned capabilities.
 
 ## Local development
 

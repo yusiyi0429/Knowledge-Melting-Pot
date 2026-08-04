@@ -92,6 +92,7 @@ public class S3ObjectStorageAdapter implements ObjectStoragePort {
                     .build();
             PresignedUploadPartRequest presigned = publicPresigner.presignUploadPart(presignRequest);
             Map<String, String> headers = presigned.signedHeaders().entrySet().stream()
+                    .filter(entry -> !"host".equalsIgnoreCase(entry.getKey()))
                     .collect(Collectors.toMap(Map.Entry::getKey, entry -> String.join(", ", entry.getValue())));
             parts.add(new PresignedPart(partNumber, presigned.url(), headers));
         }

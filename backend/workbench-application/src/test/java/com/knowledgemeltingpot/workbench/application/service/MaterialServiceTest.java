@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRecord;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
+import com.knowledgemeltingpot.workbench.application.port.MaterialSelection;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRound;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRoundStatus;
@@ -21,6 +22,7 @@ import com.knowledgemeltingpot.workbench.domain.Job;
 import com.knowledgemeltingpot.workbench.domain.JobStatus;
 import com.knowledgemeltingpot.workbench.domain.JobType;
 import com.knowledgemeltingpot.workbench.domain.Material;
+import com.knowledgemeltingpot.workbench.domain.MaterialFormat;
 import com.knowledgemeltingpot.workbench.domain.MaterialPartition;
 import com.knowledgemeltingpot.workbench.domain.MaterialShareScope;
 import com.knowledgemeltingpot.workbench.domain.MaterialStatus;
@@ -181,5 +183,48 @@ class MaterialServiceTest {
             boolean regulatorySource, Set<UUID> subSceneIds) {
         return new MaterialUploadCommand("rules.pdf", 10, "application/pdf", "a".repeat(64), round.id(),
                 subSceneIds, partition, shareScope, regulatorySource);
+    }
+
+    @Test
+    void workbenchListingReturnsEveryMaterialStatusForRoundAndSubScene() {
+        Material uploaded = new Material(UUID.randomUUID(), "notes.txt", MaterialFormat.TXT, "text/plain",
+                "quarantine/" + UUID.randomUUID(), "b".repeat(64), 12, MaterialStatus.UPLOADED, NOW, NOW);
+        RoundMaterial binding = new RoundMaterial(UUID.randomUUID(), uploaded.id(), round.id(), primary.id(),
+                MaterialPartition.SOURCE, MaterialShareScope.ROUND, false, true, NOW);
+        when(materials.findWorkbenchMaterials(round.id(), primary.id()))
+                .thenReturn(List.of(new MaterialSelection(uploaded, binding)));
+
+        List<MaterialSelection> result = service.listWorkbenchMaterials(round.id(), primary.id());
+
+        assertThat(result).singleElement().satisfies(selection -> {
+            assertThat(selection.material().status()).isEqualTo(MaterialStatus.UPLOADED);
+            assertThat(selection.binding().subSceneId()).isEqualTo(primary.id());
+            assertThat(selection.binding().active()).isTrue();
+        });
+    }
+
+    @Test
+    void workbenchListingRejectsRoundThatDoesNotBelongToSubScene() {
+        UUID otherSceneId = UUID.randomUUID();
+        SubScene other = new SubScene(UUID.randomUUID(), otherSceneId, "Other", "", NOW, NOW);
+        lenient().when(scenes.findSubScene(other.id())).thenReturn(Optional.of(other));
+
+        assertThatThrownBy(() -> service.listWorkbenchMaterials(round.id(), other.id()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("round does not belong");
+    }
+
+    @Test
+    void abortUploadMovesPendingMaterialToInactiveTerminalState() {
+        UUID materialId = UUID.randomUUID();
+        MaterialUploadIntent intent = MaterialUploadIntent.multipart(UUID.randomUUID(), materialId, ACTOR_ID, NOW,
+                "upload-1", "quarantine/" + materialId, 5_242_880L, 1, NOW.plusSeconds(900));
+        when(materials.lockIntent(intent.id())).thenReturn(Optional.of(intent));
+        when(materials.abortIntent(intent.id(), NOW)).thenReturn(true);
+
+        service.abortUpload(intent.id(), ACTOR_ID, "trace");
+
+        verify(materials).transitionStatus(materialId, MaterialStatus.PENDING_UPLOAD,
+                MaterialStatus.INACTIVE, NOW);
     }
 }

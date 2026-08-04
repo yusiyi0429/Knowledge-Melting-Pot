@@ -17,8 +17,9 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
-import java.net.URL;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
@@ -30,6 +31,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -81,6 +83,13 @@ public class MaterialController {
         return ResponseEntity.noContent().build();
     }
 
+    @GetMapping
+    public List<MaterialListItemResponse> list(@RequestParam UUID roundId, @RequestParam UUID subSceneId) {
+        return materialService.listWorkbenchMaterials(roundId, subSceneId).stream()
+                .map(selection -> MaterialListItemResponse.from(selection.material(), selection.binding()))
+                .toList();
+    }
+
     @GetMapping("/{materialId}")
     public MaterialResponse get(@PathVariable UUID materialId) {
         return MaterialResponse.from(materialService.get(materialId), materialService.bindings(materialId));
@@ -118,14 +127,49 @@ public class MaterialController {
             List<String> supportedFormats,
             String completionBehavior,
             String messageCode,
+            List<PresignedPartResponse> parts,
+            Long partSize,
+            Integer partCount,
             List<String> presignedUrls) {
 
         static UploadIntentResponse from(MaterialUploadIntentResult result) {
+            List<PresignedPartResponse> parts = result.presignedParts().stream()
+                    .map(part -> new PresignedPartResponse(part.partNumber(), part.url().toString(), part.requiredHeaders()))
+                    .toList();
             return new UploadIntentResponse(result.intent().id(), result.material().id(),
                     result.material().objectKey(), result.material().status().name(), result.uploadMode(),
-                    result.capabilityStatus(), !result.presignedUrls().isEmpty(), Material.MAX_UPLOAD_BYTES,
+                    result.capabilityStatus(), !result.presignedParts().isEmpty(), Material.MAX_UPLOAD_BYTES,
                     SUPPORTED_FORMATS, "QUEUES_VALIDATION", result.messageCode(),
-                    result.presignedUrls().stream().map(URL::toString).toList());
+                    parts, result.intent().partSize(), result.intent().partCount(),
+                    parts.stream().map(PresignedPartResponse::url).toList());
+        }
+    }
+
+    public record PresignedPartResponse(
+            int partNumber,
+            String url,
+            Map<String, String> headers) {
+
+        public PresignedPartResponse {
+            headers = Map.copyOf(headers);
+        }
+    }
+
+    public record MaterialListItemResponse(
+            UUID id,
+            String fileName,
+            String format,
+            String mediaType,
+            long sizeBytes,
+            String status,
+            Instant createdAt,
+            Instant updatedAt,
+            BindingResponse binding) {
+
+        static MaterialListItemResponse from(Material material, RoundMaterial binding) {
+            return new MaterialListItemResponse(material.id(), material.fileName(), material.format().name(),
+                    material.mediaType(), material.sizeBytes(), material.status().name(),
+                    material.createdAt(), material.updatedAt(), BindingResponse.from(binding));
         }
     }
 

@@ -62,7 +62,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(UnprocessableEntityException.class)
     ResponseEntity<ProblemDetail> unprocessable(UnprocessableEntityException exception) {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Document validation failed", exception.getMessage(),
-                "document-validation");
+                exception.code());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

@@ -5,6 +5,7 @@ import com.knowledgemeltingpot.workbench.application.error.NotFoundException;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRecord;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
+import com.knowledgemeltingpot.workbench.application.port.MaterialSelection;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRound;
@@ -17,7 +18,6 @@ import com.knowledgemeltingpot.workbench.domain.MaterialUploadIntent;
 import com.knowledgemeltingpot.workbench.domain.RoundMaterial;
 import com.knowledgemeltingpot.workbench.domain.SubScene;
 import com.knowledgemeltingpot.workbench.domain.UploadState;
-import java.net.URL;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -111,7 +111,7 @@ public class MaterialService {
         materialRepository.insertBindings(bindings);
 
         MaterialUploadIntent intent;
-        List<URL> presignedUrls;
+        List<ObjectStoragePort.PresignedPart> presignedParts;
         boolean configured;
         String uploadMode;
         String capabilityStatus;
@@ -123,17 +123,15 @@ public class MaterialService {
             intent = materialRepository.insertIntent(MaterialUploadIntent.multipart(intentId, materialId, actorId, now,
                     multipart.uploadId(), multipart.objectKey(), multipart.partSize(), multipart.partCount(),
                     multipart.expiresAt()));
-            presignedUrls = port.presignParts(ObjectStoragePort.StorageZone.QUARANTINE, multipart.uploadId(),
-                    multipart.objectKey(), 1, multipart.partCount(), PRESIGN_UPLOAD_TIMEOUT).stream()
-                    .map(ObjectStoragePort.PresignedPart::url)
-                    .toList();
+            presignedParts = port.presignParts(ObjectStoragePort.StorageZone.QUARANTINE, multipart.uploadId(),
+                    multipart.objectKey(), 1, multipart.partCount(), PRESIGN_UPLOAD_TIMEOUT);
             configured = true;
             uploadMode = "MULTIPART_PRESIGNED";
             capabilityStatus = "MULTIPART_PRESIGNED";
             messageCode = "material.upload.multipart-presigned";
         } else {
             intent = materialRepository.insertIntent(MaterialUploadIntent.declarationOnly(intentId, materialId, actorId, now));
-            presignedUrls = List.of();
+            presignedParts = List.of();
             configured = false;
             uploadMode = "DECLARATION_ONLY";
             capabilityStatus = "OBJECT_STORAGE_NOT_CONFIGURED";
@@ -147,7 +145,7 @@ public class MaterialService {
                 "shareScope", command.shareScope(),
                 "objectStorageConfigured", configured), traceId);
         return new MaterialUploadIntentResult(intent, material, bindings, false, configured, uploadMode,
-                capabilityStatus, messageCode, presignedUrls);
+                capabilityStatus, messageCode, presignedParts);
     }
 
     @Transactional
@@ -255,6 +253,9 @@ public class MaterialService {
         if (!materialRepository.abortIntent(intent.id(), now)) {
             throw new ConflictException("upload intent could not be aborted");
         }
+        // An aborted intent must never leave its material permanently PENDING_UPLOAD.
+        materialRepository.transitionStatus(intent.materialId(), MaterialStatus.PENDING_UPLOAD,
+                MaterialStatus.INACTIVE, now);
         auditService.record(actorId, "MATERIAL_UPLOAD_ABORTED", "MATERIAL", intent.materialId(), Map.of(), traceId);
     }
 
@@ -293,6 +294,21 @@ public class MaterialService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<MaterialSelection> listWorkbenchMaterials(UUID roundId, UUID subSceneId) {
+        if (roundId == null || subSceneId == null) {
+            throw new IllegalArgumentException("roundId and subSceneId are required");
+        }
+        ExtractionRound round = sceneRepository.findRound(roundId)
+                .orElseThrow(() -> new NotFoundException("extraction round does not exist"));
+        sceneRepository.findSubScene(subSceneId)
+                .orElseThrow(() -> new NotFoundException("sub-scene does not exist"));
+        if (!round.subSceneId().equals(subSceneId)) {
+            throw new IllegalArgumentException("round does not belong to the requested sub-scene");
+        }
+        return materialRepository.findWorkbenchMaterials(roundId, subSceneId);
+    }
+
     private MaterialUploadIntentResult replay(String scope, String key, String requestHash) {
         return idempotencyRepository.find(scope, key).map(record -> {
             if (!record.requestHash().equals(requestHash)
@@ -303,12 +319,10 @@ public class MaterialService {
                     .orElseThrow(() -> new ConflictException("idempotent upload intent is unavailable"));
             Material material = materialRepository.findById(intent.materialId())
                     .orElseThrow(() -> new ConflictException("idempotent material is unavailable"));
-            List<URL> urls = objectStorage.isPresent() && intent.isMultipart()
+            List<ObjectStoragePort.PresignedPart> parts = objectStorage.isPresent() && intent.isMultipart()
                     ? objectStorage.get().presignParts(ObjectStoragePort.StorageZone.QUARANTINE,
                             intent.storageUploadId(), intent.quarantineObjectKey(), 1, intent.partCount(),
-                            PRESIGN_UPLOAD_TIMEOUT).stream()
-                            .map(ObjectStoragePort.PresignedPart::url)
-                            .toList()
+                            PRESIGN_UPLOAD_TIMEOUT)
                     : List.of();
             return new MaterialUploadIntentResult(intent, material,
                     materialRepository.findBindings(material.id()), true, objectStorage.isPresent() && intent.isMultipart(),
@@ -317,7 +331,7 @@ public class MaterialService {
                             : "OBJECT_STORAGE_NOT_CONFIGURED",
                     intent.isMultipart() ? "material.upload.multipart-presigned"
                             : "material.upload.object-storage-not-configured",
-                    urls);
+                    parts);
         }).orElse(null);
     }
 

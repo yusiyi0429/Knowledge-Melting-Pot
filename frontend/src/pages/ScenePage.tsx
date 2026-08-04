@@ -1,9 +1,60 @@
-import { useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LineageRail, type LineageStage } from "../components/LineageRail";
-import { Button, DemoNotice, Glyph, Status } from "../components/Ui";
-import { assets as assetFixtures, initialMarkdown, materials as materialFixtures, scenes, sourceRefs, subscenes as subsceneFixtures } from "../fixtures";
-import { partitionLabels, releaseCanInclude, toStatusTone, type Material, type Subscene } from "../domain";
-import { useJobEvents } from "../hooks/useJobEvents";
+import { Button, EmptyState, Glyph, Status } from "../components/Ui";
+import {
+  ApiError,
+  adoptAlignmentProposal,
+  createExtractionRound,
+  createRelease,
+  createSubScene,
+  generateAssets,
+  getCurrentUser,
+  getJob,
+  getSkill,
+  getKnowledgeDocument,
+  getLatestRelease,
+  getReleaseManifest,
+  getScene,
+  listDocumentRevisions,
+  listAlignmentProposals,
+  listExtractionRounds,
+  listModelConfigVersions,
+  listModelConnections,
+  listSkills,
+  listSubSceneAssets,
+  listSubScenes,
+  listWorkbenchMaterials,
+  saveKnowledgeDocument,
+  startAlignment,
+  startExtraction,
+  updateScene,
+  validateRelease,
+} from "../lib/api";
+import type {
+  Asset,
+  AlignmentAction,
+  AlignmentProposal,
+  AssetJobAccepted,
+  AssetType,
+  AuthenticatedUser,
+  DocumentRevisionSummary,
+  ExtractionRound,
+  ExtractionRoundStatus,
+  Job,
+  JobAccepted,
+  KnowledgeDocument,
+  MaterialListItem,
+  ModelConfigVersion,
+  Release,
+  ReleaseValidation,
+  SaveDocumentDraft,
+  Scene,
+  SourceRefEntry,
+  SkillVersion,
+  SubScene,
+} from "../lib/api";
+import { ASSET_STATUS_LABELS, ASSET_TYPE_DESCRIPTIONS, ASSET_TYPE_LABELS, MATERIAL_STATUS_LABELS, partitionLabels, toStatusTone } from "../domain";
+import { UploadMaterialDialog } from "./UploadMaterialDialog";
 
 const steps = [
   { id: 1, title: "场景与素材", detail: "目标 · 素材 · 子场景", stage: "materials" },
@@ -11,41 +62,767 @@ const steps = [
   { id: 3, title: "知识生成及发布", detail: "五类资产 · 发布快照", stage: "assets" },
 ] as const;
 
-export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate: (href: string) => void }) {
-  const scene = scenes.find((item) => item.id === sceneId) ?? scenes[0];
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [subscenes, setSubscenes] = useState<Subscene[]>(subsceneFixtures);
-  const [selectedSubscene, setSelectedSubscene] = useState(subsceneFixtures[1].id);
-  const [materials, setMaterials] = useState<Material[]>(materialFixtures);
-  const [markdown, setMarkdown] = useState(initialMarkdown);
-  const [savedMarkdown, setSavedMarkdown] = useState(initialMarkdown);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [toast, setToast] = useState("");
-  const [releaseSelection, setReleaseSelection] = useState<string[]>([subsceneFixtures[2].id]);
-  const { events, connection } = useJobEvents({ jobId, demo: true });
+const ROUND_STATUS_LABELS: Record<ExtractionRoundStatus, string> = {
+  DRAFT: "草稿",
+  PROCESSING: "处理中",
+  READY: "就绪",
+  FAILED: "失败",
+  SUPERSEDED: "已取代",
+};
 
-  const activeSubscene = subscenes.find((item) => item.id === selectedSubscene) ?? subscenes[0];
-  const isDirty = markdown !== savedMarkdown;
-  const jobProgress = events.at(-1)?.percent ?? 0;
+function fieldErrorsToRecord(errors: ApiError["errors"]): Record<string, string> {
+  const record: Record<string, string> = {};
+  for (const error of errors ?? []) {
+    if (!record[error.field]) record[error.field] = error.message;
+  }
+  return record;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatSourceLocator(ref: SourceRefEntry): string {
+  switch (ref.locatorType) {
+    case "PDF_PAGE_PARAGRAPH": return `PDF 第 ${ref.page ?? "?"} 页 · 段落 ${ref.paragraph ?? "?"}`;
+    case "DOCX_PARAGRAPH": return `DOCX 段落 ${ref.paragraph ?? "?"}`;
+    case "DOCX_TABLE_CELL": return `DOCX 表 ${ref.table ?? "?"} · 行 ${ref.rowStart ?? "?"} · 列 ${ref.colStart ?? "?"}`;
+    case "XLSX_RANGE": return `XLSX ${ref.sheet ?? "?"} · 行 ${ref.rowStart ?? "?"}-${ref.rowEnd ?? "?"}`;
+    case "TXT_LINES": return `TXT 行 ${ref.lineStart ?? "?"}-${ref.lineEnd ?? "?"}`;
+  }
+}
+
+function AddSubSceneDialog({
+  saving,
+  formError,
+  formFieldErrors,
+  onClose,
+  onSubmit,
+}: {
+  saving: boolean;
+  formError: string | null;
+  formFieldErrors: Record<string, string>;
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    if (!node.open) node.showModal();
+    return () => {
+      if (node.open) node.close();
+    };
+  }, []);
+
+  return (
+    <dialog ref={ref} className="scene-dialog" aria-labelledby="subscene-dialog-title" onCancel={onClose}>
+      <form className="model-dialog__form" onSubmit={onSubmit} noValidate>
+        <header className="model-dialog__head">
+          <div>
+            <h2 id="subscene-dialog-title">添加子场景</h2>
+            <p>子场景决定萃取范围；名称必填。</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭" onClick={onClose} disabled={saving}>
+            <Glyph name="close" size={16} />
+          </button>
+        </header>
+        <div className="model-dialog__body">
+          <label className="field">
+            <span>子场景名称</span>
+            <input name="name" autoFocus autoComplete="off" maxLength={200}
+              placeholder="例如：逾期天数与分类下迁" aria-invalid={Boolean(formFieldErrors.name)} />
+            <small>1–200 字符。</small>
+            {formFieldErrors.name ? <small className="field-error">{formFieldErrors.name}</small> : null}
+          </label>
+          <label className="field">
+            <span>描述（可选）</span>
+            <textarea name="description" maxLength={10000}
+              placeholder="说明该子场景的业务边界和期望产物。" aria-invalid={Boolean(formFieldErrors.description)} />
+            {formFieldErrors.description ? <small className="field-error">{formFieldErrors.description}</small> : null}
+          </label>
+          {formError ? <div className="form-error" role="alert">{formError}</div> : null}
+        </div>
+        <footer className="model-dialog__foot">
+          <Button type="button" className="button--quiet" onClick={onClose} disabled={saving}>取消</Button>
+          <Button type="submit" className="button--primary" disabled={saving}>
+            {saving ? "创建中…" : "创建子场景"}
+          </Button>
+        </footer>
+      </form>
+    </dialog>
+  );
+}
+
+export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate: (href: string) => void }) {
+  const [scene, setScene] = useState<Scene | null>(null);
+  const [subscenes, setSubscenes] = useState<SubScene[] | null>(null);
+  const [rounds, setRounds] = useState<ExtractionRound[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [selectedSubsceneId, setSelectedSubsceneId] = useState<string | null>(null);
+
+  const [sceneName, setSceneName] = useState("");
+  const [sceneDescription, setSceneDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [subsceneSaving, setSubsceneSaving] = useState(false);
+  const [subsceneFormError, setSubsceneFormError] = useState<string | null>(null);
+  const [subsceneFieldErrors, setSubsceneFieldErrors] = useState<Record<string, string>>({});
+  const dialogTrigger = useRef<HTMLElement | null>(null);
+
+  const [roundCreating, setRoundCreating] = useState(false);
+  const [roundError, setRoundError] = useState<string | null>(null);
+
+  const [materials, setMaterials] = useState<MaterialListItem[] | null>(null);
+  const [materialsError, setMaterialsError] = useState<string | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+
+  const [doc, setDoc] = useState<KnowledgeDocument | null>(null);
+  const [documentMissing, setDocMissing] = useState(false);
+  const [docLoadError, setDocLoadError] = useState<string | null>(null);
+  const [documentLoading, setDocLoading] = useState(false);
+  const [editorContent, setEditorContent] = useState("");
+  const [revisionNote, setRevisionNote] = useState("");
+  const [revisions, setRevisions] = useState<DocumentRevisionSummary[] | null>(null);
+  const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [savingDoc, setSavingDoc] = useState(false);
+  const [docMessage, setDocMessage] = useState<string | null>(null);
+  const [docSaveError, setDocSaveError] = useState<string | null>(null);
+  const [docConflict, setDocConflict] = useState(false);
+  const [modelConfigs, setModelConfigs] = useState<ModelConfigVersion[]>([]);
+  const [skillVersions, setSkillVersions] = useState<SkillVersion[]>([]);
+  const [selectedModelConfigId, setSelectedModelConfigId] = useState("");
+  const [selectedSkillVersionId, setSelectedSkillVersionId] = useState("");
+  const [workflowOptionsError, setWorkflowOptionsError] = useState<string | null>(null);
+  const [extractionJob, setExtractionJob] = useState<JobAccepted | null>(null);
+  const [extractionStatus, setExtractionStatus] = useState<Job | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [alignmentAction, setAlignmentAction] = useState<AlignmentAction>("CONSISTENCY");
+  const [alignmentJob, setAlignmentJob] = useState<JobAccepted | null>(null);
+  const [alignmentStatus, setAlignmentStatus] = useState<Job | null>(null);
+  const [aligning, setAligning] = useState(false);
+  const [proposals, setProposals] = useState<AlignmentProposal[]>([]);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [adoptingProposalId, setAdoptingProposalId] = useState<string | null>(null);
+
+  const [assets, setAssets] = useState<Asset[] | null>(null);
+  const [assetsError, setAssetsError] = useState<string | null>(null);
+  const [assetJob, setAssetJob] = useState<AssetJobAccepted | null>(null);
+  const [jobStatus, setJobStatus] = useState<Job | null>(null);
+  const [generatingTypes, setGeneratingTypes] = useState<AssetType[] | null>(null);
+  const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
+
+  const [releaseTag, setReleaseTag] = useState("");
+  const [releaseNote, setReleaseNote] = useState("");
+  const [releaseSelected, setReleaseSelected] = useState<string[]>([]);
+  const [releaseConfirmed, setReleaseConfirmed] = useState(false);
+  const [latestRelease, setLatestRelease] = useState<Release | null>(null);
+  const [validatedFingerprint, setValidatedFingerprint] = useState<string | null>(null);
+  const [validation, setValidation] = useState<ReleaseValidation | null>(null);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [released, setReleased] = useState<Release | null>(null);
+  const [manifest, setManifest] = useState<string | null>(null);
+  const jobTimer = useRef<number | null>(null);
+  const workflowTimer = useRef<number | null>(null);
+  const selectedSubsceneRef = useRef<string | null>(selectedSubsceneId);
+
+  useEffect(() => {
+    selectedSubsceneRef.current = selectedSubsceneId;
+  }, [selectedSubsceneId]);
+
+  // Switching sub-scenes stops the previous generation poll and its state.
+  useEffect(() => () => {
+    if (jobTimer.current !== null) {
+      window.clearTimeout(jobTimer.current);
+      jobTimer.current = null;
+    }
+    if (workflowTimer.current !== null) {
+      window.clearTimeout(workflowTimer.current);
+      workflowTimer.current = null;
+    }
+    setGeneratingTypes(null);
+    setExtracting(false);
+    setAligning(false);
+  }, [selectedSubsceneId]);
+
+  useEffect(() => () => {
+    if (jobTimer.current !== null) window.clearTimeout(jobTimer.current);
+    if (workflowTimer.current !== null) window.clearTimeout(workflowTimer.current);
+  }, []);
+
+  useEffect(() => {
+    void getCurrentUser().then(setCurrentUser).catch(() => setCurrentUser(null));
+  }, []);
+
+  const loadAll = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const [loadedScene, loadedSubscenes, loadedRounds] = await Promise.all([
+        getScene(sceneId),
+        listSubScenes(sceneId),
+        listExtractionRounds(sceneId),
+      ]);
+      setScene(loadedScene);
+      setSceneName(loadedScene.name);
+      setSceneDescription(loadedScene.description);
+      setSubscenes(loadedSubscenes);
+      setRounds(loadedRounds);
+      setSelectedSubsceneId((current) => {
+        if (current && loadedSubscenes.some((item) => item.id === current)) return current;
+        return loadedSubscenes[0]?.id ?? null;
+      });
+    } catch (reason) {
+      setScene(null);
+      setSubscenes(null);
+      setRounds(null);
+      setLoadError(reason instanceof ApiError ? reason.message : "无法连接 API，请确认已登录后重试。");
+    }
+  }, [sceneId]);
+
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  const activeSubscene = useMemo(
+    () => subscenes?.find((item) => item.id === selectedSubsceneId) ?? null,
+    [subscenes, selectedSubsceneId],
+  );
+
+  const selectedRounds = useMemo(
+    () => (rounds ?? []).filter((round) => round.subSceneId === selectedSubsceneId),
+    [rounds, selectedSubsceneId],
+  );
+
+  const latestRound = useMemo(
+    () => selectedRounds.reduce<ExtractionRound | null>(
+      (latest, round) => latest === null || round.roundNumber > latest.roundNumber ? round : latest,
+      null,
+    ),
+    [selectedRounds],
+  );
+
+  const currentRoundId = latestRound?.id ?? null;
+
+  const loadMaterials = useCallback(async () => {
+    if (!selectedSubsceneId || !currentRoundId) {
+      setMaterials(null);
+      return;
+    }
+    setMaterialsError(null);
+    try {
+      setMaterials(await listWorkbenchMaterials(currentRoundId, selectedSubsceneId));
+    } catch (reason) {
+      setMaterials(null);
+      setMaterialsError(reason instanceof ApiError ? reason.message : "无法读取素材列表。");
+    }
+  }, [selectedSubsceneId, currentRoundId]);
+
+  useEffect(() => {
+    void loadMaterials();
+  }, [loadMaterials]);
+
+  const loadDocument = useCallback(async () => {
+    if (!selectedSubsceneId) return;
+    setDocLoading(true);
+    setDocLoadError(null);
+    setDocConflict(false);
+    setDocMessage(null);
+    try {
+      const loaded = await getKnowledgeDocument(selectedSubsceneId);
+      setDoc(loaded);
+      setDocMissing(false);
+      setEditorContent(loaded.contentMd);
+      setRevisionNote("");
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 404) {
+        setDoc(null);
+        setDocMissing(true);
+        setEditorContent("");
+      } else {
+        setDoc(null);
+        setDocMissing(false);
+        setDocLoadError(reason instanceof ApiError ? reason.message : "无法读取知识文档。");
+      }
+    } finally {
+      setDocLoading(false);
+    }
+  }, [selectedSubsceneId]);
+
+  useEffect(() => {
+    if (step === 2 || step === 3) void loadDocument();
+  }, [step, loadDocument]);
+
+  const loadWorkflowOptions = useCallback(async () => {
+    setWorkflowOptionsError(null);
+    try {
+      const [connections, skills] = await Promise.all([listModelConnections(), listSkills()]);
+      const [configsByConnection, skillDetails] = await Promise.all([
+        Promise.all(connections.filter((connection) => connection.enabled)
+          .map((connection) => listModelConfigVersions(connection.id))),
+        Promise.all(skills.map((skill) => getSkill(skill.id))),
+      ]);
+      const configs = configsByConnection.flat()
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const versions = skillDetails.flatMap((detail) => detail.versions)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setModelConfigs(configs);
+      setSkillVersions(versions);
+      setSelectedModelConfigId((current) => configs.some((item) => item.id === current) ? current : configs[0]?.id ?? "");
+      setSelectedSkillVersionId((current) => versions.some((item) => item.id === current) ? current : versions[0]?.id ?? "");
+    } catch (reason) {
+      setWorkflowOptionsError(reason instanceof ApiError ? reason.message : "无法读取模型与 Skill 版本。");
+    }
+  }, []);
+
+  const loadProposals = useCallback(async () => {
+    if (!selectedSubsceneId || documentMissing) {
+      setProposals([]);
+      return;
+    }
+    setProposalError(null);
+    try {
+      setProposals(await listAlignmentProposals(selectedSubsceneId));
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 404) setProposals([]);
+      else setProposalError(reason instanceof ApiError ? reason.message : "无法读取 AI 对齐提案。");
+    }
+  }, [selectedSubsceneId, documentMissing]);
+
+  useEffect(() => {
+    if (step === 2) {
+      void loadWorkflowOptions();
+      if (doc) void loadProposals();
+    }
+  }, [step, doc?.revisionId, loadWorkflowOptions, loadProposals]);
+
+  const loadAssets = useCallback(async () => {
+    if (!selectedSubsceneId) return;
+    setAssetsError(null);
+    try {
+      setAssets(await listSubSceneAssets(selectedSubsceneId));
+    } catch (reason) {
+      setAssets(null);
+      setAssetsError(reason instanceof ApiError ? reason.message : "无法读取资产列表。");
+    }
+  }, [selectedSubsceneId]);
+
+  useEffect(() => {
+    if (step === 3) void loadAssets();
+  }, [step, loadAssets]);
+
+  const loadReleaseBaseline = useCallback(async () => {
+    if (!scene) return;
+    try {
+      setLatestRelease(await getLatestRelease(scene.id));
+    } catch {
+      setLatestRelease(null);
+    }
+  }, [scene]);
+
+  useEffect(() => {
+    if (step === 3) void loadReleaseBaseline();
+  }, [step, loadReleaseBaseline]);
+
+  const isDirty = documentMissing
+    ? editorContent.trim().length > 0
+    : doc !== null && editorContent !== doc.contentMd;
+
+  const sourceAnchorCount = useMemo(() => {
+    const matches = editorContent.match(/\[SRC-[A-Za-z0-9_-]{1,100}]/g);
+    return matches?.length ?? 0;
+  }, [editorContent]);
+
+  const saveDocument = async (finalize: boolean) => {
+    if (!selectedSubsceneId || savingDoc) return;
+    setSavingDoc(true);
+    setDocMessage(null);
+    setDocSaveError(null);
+    setDocConflict(false);
+    try {
+      const draft: SaveDocumentDraft = { subSceneId: selectedSubsceneId, contentMd: editorContent, finalize };
+      if (revisionNote.trim()) draft.revisionNote = revisionNote.trim();
+      const ifMatch = documentMissing || doc === null ? "*" : doc.etag;
+      const saved = await saveKnowledgeDocument(selectedSubsceneId, draft, ifMatch);
+      setDoc(saved);
+      setDocMissing(false);
+      setEditorContent(saved.contentMd);
+      setRevisionNote("");
+      setDocMessage(finalize
+        ? `文档已定稿（Revision v${saved.revisionNumber}）。`
+        : `已保存 Revision v${saved.revisionNumber}。`);
+    } catch (reason) {
+      if (reason instanceof ApiError && (reason.status === 409 || reason.status === 412 || reason.status === 428)) {
+        setDocConflict(true);
+        setDocSaveError(reason.message);
+      } else {
+        setDocSaveError(reason instanceof ApiError ? reason.message : "保存失败，请稍后重试。");
+      }
+    } finally {
+      setSavingDoc(false);
+    }
+  };
+
+  const toggleRevisions = async () => {
+    if (revisionsOpen) {
+      setRevisionsOpen(false);
+      return;
+    }
+    if (!selectedSubsceneId) return;
+    setRevisionsOpen(true);
+    try {
+      setRevisions(await listDocumentRevisions(selectedSubsceneId));
+    } catch {
+      setRevisions([]);
+    }
+  };
+
+  const pollWorkflowJob = (jobId: string, kind: "extraction" | "alignment") => {
+    const tick = async () => {
+      try {
+        const status = await getJob(jobId);
+        if (kind === "extraction") setExtractionStatus(status);
+        else setAlignmentStatus(status);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(status.status)) {
+          if (workflowTimer.current !== null) {
+            window.clearTimeout(workflowTimer.current);
+            workflowTimer.current = null;
+          }
+          if (kind === "extraction") {
+            setExtracting(false);
+            if (status.status === "SUCCEEDED") {
+              setDocMessage("Map/Reduce 萃取完成，已生成新的可验证 Revision。");
+              await loadDocument();
+            } else {
+              setDocSaveError(`萃取任务未完成：${status.errorCode ?? status.status}`);
+            }
+          } else {
+            setAligning(false);
+            if (status.status === "SUCCEEDED") {
+              await loadProposals();
+            } else {
+              setProposalError(`对齐任务未完成：${status.errorCode ?? status.status}`);
+            }
+          }
+          return;
+        }
+        workflowTimer.current = window.setTimeout(() => void tick(), 1500);
+      } catch (reason) {
+        if (workflowTimer.current !== null) window.clearTimeout(workflowTimer.current);
+        workflowTimer.current = null;
+        if (kind === "extraction") {
+          setExtracting(false);
+          setDocSaveError(reason instanceof ApiError ? reason.message : "无法读取萃取任务状态。");
+        } else {
+          setAligning(false);
+          setProposalError(reason instanceof ApiError ? reason.message : "无法读取对齐任务状态。");
+        }
+      }
+    };
+    void tick();
+  };
+
+  const runExtraction = async () => {
+    if (!selectedSubsceneId || !currentRoundId || !selectedModelConfigId || !selectedSkillVersionId || extracting) return;
+    setExtracting(true);
+    setExtractionJob(null);
+    setExtractionStatus(null);
+    setDocSaveError(null);
+    try {
+      const accepted = await startExtraction(selectedSubsceneId, currentRoundId, selectedModelConfigId,
+        selectedSkillVersionId, crypto.randomUUID());
+      setExtractionJob(accepted);
+      pollWorkflowJob(accepted.jobId, "extraction");
+    } catch (reason) {
+      setExtracting(false);
+      setDocSaveError(reason instanceof ApiError ? reason.message : "发起知识萃取失败。");
+    }
+  };
+
+  const runAlignment = async () => {
+    if (!selectedSubsceneId || !doc || isDirty || aligning) return;
+    const regulatoryMaterialIds = alignmentAction === "REGULATORY"
+      ? (materials ?? []).filter((material) => material.binding.regulatorySource && material.status === "READY")
+        .map((material) => material.id)
+      : [];
+    if (alignmentAction === "REGULATORY" && regulatoryMaterialIds.length === 0) {
+      setProposalError("监管对齐需要当前轮次至少一份 READY 且标记为监管依据的素材。");
+      return;
+    }
+    setAligning(true);
+    setAlignmentJob(null);
+    setAlignmentStatus(null);
+    setProposalError(null);
+    try {
+      const accepted = await startAlignment(selectedSubsceneId, doc.revisionId, alignmentAction,
+        regulatoryMaterialIds, crypto.randomUUID());
+      setAlignmentJob(accepted);
+      pollWorkflowJob(accepted.jobId, "alignment");
+    } catch (reason) {
+      setAligning(false);
+      setProposalError(reason instanceof ApiError ? reason.message : "发起 AI 对齐失败。");
+    }
+  };
+
+  const adoptProposal = async (proposal: AlignmentProposal) => {
+    if (isDirty || adoptingProposalId !== null) return;
+    setAdoptingProposalId(proposal.id);
+    setProposalError(null);
+    try {
+      const saved = await adoptAlignmentProposal(proposal.id, proposal.baseEtag);
+      setDoc(saved);
+      setEditorContent(saved.contentMd);
+      setDocMissing(false);
+      setDocMessage(`已采纳 Proposal，生成 Revision v${saved.revisionNumber}。`);
+      await loadProposals();
+    } catch (reason) {
+      setProposalError(reason instanceof ApiError ? reason.message : "采纳 Proposal 失败。");
+    } finally {
+      setAdoptingProposalId(null);
+    }
+  };
+
+  const canGenerate = doc !== null && !documentMissing && doc.finalized;
+
+  const pollJob = (jobId: string, pollingSubScene: string) => {
+    const tick = async () => {
+      try {
+        const job = await getJob(jobId);
+        setJobStatus(job);
+        if (job.status === "SUCCEEDED" || job.status === "FAILED" || job.status === "CANCELLED") {
+          if (jobTimer.current !== null) {
+            window.clearTimeout(jobTimer.current);
+            jobTimer.current = null;
+          }
+          setGeneratingTypes(null);
+          // Never let a stale job refresh the currently viewed sub-scene's assets.
+          if (pollingSubScene === selectedSubsceneRef.current) {
+            await loadAssets();
+          }
+          return;
+        }
+        jobTimer.current = window.setTimeout(() => void tick(), 2000);
+      } catch {
+        if (jobTimer.current !== null) {
+          window.clearTimeout(jobTimer.current);
+          jobTimer.current = null;
+        }
+        setGeneratingTypes(null);
+        setAssetsError("无法读取资产生成任务状态。");
+      }
+    };
+    void tick();
+  };
+
+  const startGeneration = async (types: AssetType[]) => {
+    if (!canGenerate || !doc || !selectedSubsceneId || generatingTypes !== null) return;
+    setGeneratingTypes(types);
+    setAssetJob(null);
+    setJobStatus(null);
+    setAssetsError(null);
+    try {
+      const accepted = await generateAssets(selectedSubsceneId, doc.revisionId, types, crypto.randomUUID());
+      setAssetJob(accepted);
+      pollJob(accepted.jobId, selectedSubsceneId);
+    } catch (reason) {
+      setGeneratingTypes(null);
+      setAssetsError(reason instanceof ApiError ? reason.message : "发起资产生成失败。");
+    }
+  };
+
+  const canPublish = Boolean(
+    currentUser && (currentUser.roles.includes("PUBLISHER") || currentUser.roles.includes("ADMIN")),
+  );
+
+  const releaseFingerprint = () =>
+    `${releaseTag.trim()}|${releaseNote.trim()}|${[...releaseSelected].sort().join(",")}|${releaseConfirmed}`;
+
+  const runPreflight = async () => {
+    if (!scene) return;
+    setReleaseError(null);
+    setValidation(null);
+    if (!releaseTag.trim() || releaseSelected.length === 0 || !releaseConfirmed) {
+      setReleaseError("请填写发布 tag、选择子场景，并完成二次确认。");
+      return;
+    }
+    if (!/^v[0-9]+\.[0-9]+(?:\.[0-9]+)?$/.test(releaseTag.trim())) {
+      setReleaseError("发布 tag 必须是 vX.Y 或 vX.Y.Z 语义化版本。");
+      return;
+    }
+    try {
+      const validated = await validateRelease(scene.id, {
+        tag: releaseTag.trim(),
+        selectedSubSceneIds: releaseSelected,
+        note: releaseNote.trim(),
+        confirmed: true,
+        expectedBaseReleaseId: latestRelease?.id ?? null,
+      });
+      setValidation(validated);
+      setValidatedFingerprint(releaseFingerprint());
+    } catch (reason) {
+      setReleaseError(reason instanceof ApiError ? reason.message : "发布预检失败。");
+    }
+  };
+
+  const draftStale = validatedFingerprint !== null && releaseFingerprint() !== validatedFingerprint;
+
+  const publishRelease = async () => {
+    if (!scene || !validation?.ready || publishing) return;
+    if (draftStale) {
+      setReleaseError("发布内容已变更，请重新预检后再发布。");
+      setValidation(null);
+      setValidatedFingerprint(null);
+      return;
+    }
+    setPublishing(true);
+    setReleaseError(null);
+    try {
+      const created = await createRelease(scene.id, {
+        tag: releaseTag.trim(),
+        selectedSubSceneIds: releaseSelected,
+        note: releaseNote.trim(),
+        confirmed: true,
+        expectedBaseReleaseId: latestRelease?.id ?? null,
+      }, crypto.randomUUID());
+      setReleased(created);
+      setValidation(null);
+      setValidatedFingerprint(null);
+      setLatestRelease(created);
+    } catch (reason) {
+      setReleaseError(reason instanceof ApiError ? reason.message : "发布失败。");
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const openManifest = async () => {
+    if (!released) return;
+    setManifest(null);
+    try {
+      setManifest(await getReleaseManifest(released.id));
+    } catch {
+      setManifest("无法读取发布清单。");
+    }
+  };
+
+  const downloadManifest = async () => {
+    if (!released) return;
+    try {
+      const text = await getReleaseManifest(released.id);
+      const blob = new Blob([text], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `manifest-${released.tag}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setReleaseError("无法下载发布清单。");
+    }
+  };
+
+  const sceneChanged = scene !== null && (sceneName !== scene.name || sceneDescription !== scene.description);
+
+  const saveScene = async () => {
+    if (!scene || !sceneChanged || saving) return;
+    setSaving(true);
+    setSaveFeedback(null);
+    try {
+      const updated = await updateScene(scene.id, { name: sceneName, description: sceneDescription || undefined });
+      setScene(updated);
+      setSceneName(updated.name);
+      setSceneDescription(updated.description);
+      setSaveFeedback("场景已保存。");
+    } catch (reason) {
+      setSaveFeedback(reason instanceof ApiError ? reason.message : "保存失败，请稍后重试。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openDialog = () => {
+    dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSubsceneFormError(null);
+    setSubsceneFieldErrors({});
+    setDialogOpen(true);
+  };
+
+  const closeDialog = () => {
+    setDialogOpen(false);
+    dialogTrigger.current?.focus();
+  };
+
+  const submitSubScene = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (subsceneSaving) return;
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const name = String(formData.get("name") ?? "").trim();
+    const description = String(formData.get("description") ?? "").trim();
+    if (!name) {
+      setSubsceneFormError("请输入子场景名称。");
+      return;
+    }
+    setSubsceneSaving(true);
+    try {
+      const created = await createSubScene(sceneId, { name, description: description || undefined });
+      closeDialog();
+      await loadAll();
+      setSelectedSubsceneId(created.id);
+    } catch (reason) {
+      if (reason instanceof ApiError) {
+        setSubsceneFormError(reason.message);
+        setSubsceneFieldErrors(fieldErrorsToRecord(reason.errors));
+      } else {
+        setSubsceneFormError("创建失败，请稍后重试。");
+      }
+    } finally {
+      setSubsceneSaving(false);
+    }
+  };
+
+  const startNewRound = async () => {
+    if (!selectedSubsceneId || roundCreating) return;
+    setRoundCreating(true);
+    setRoundError(null);
+    try {
+      await createExtractionRound(sceneId, selectedSubsceneId);
+      await loadAll();
+    } catch (reason) {
+      setRoundError(reason instanceof ApiError ? reason.message : "创建轮次失败，请稍后重试。");
+    } finally {
+      setRoundCreating(false);
+    }
+  };
+
   const currentLineage = steps.find((item) => item.id === step)?.stage as LineageStage;
 
-  const addSubscene = () => {
-    const id = `subscene-${subscenes.length + 1}`;
-    setSubscenes((items) => [...items, { id, name: "待命名子场景", description: "说明该子场景的业务边界和期望产物。", revision: "尚未萃取", releaseState: "BLOCKED" }]);
-    setSelectedSubscene(id);
-  };
+  if (loadError) {
+    return (
+      <div className="page">
+        <div className="load-error" role="alert">
+          <Glyph name="warning" size={16} />
+          <div><b>无法加载场景</b><span>{loadError}</span></div>
+          <Button className="button--quiet button--small" onClick={() => void loadAll()}>重试</Button>
+          <Button className="button--quiet button--small" onClick={() => onNavigate("/")}>返回场景库</Button>
+        </div>
+      </div>
+    );
+  }
 
-  const updatePartition = (id: string, partition: Material["partition"]) => {
-    setMaterials((items) => items.map((item) => item.id === id ? { ...item, partition } : item));
-  };
+  if (scene === null || subscenes === null || rounds === null) {
+    return <div className="page"><div className="model-loading" aria-busy="true">正在加载场景…</div></div>;
+  }
 
-  const startDemoJob = () => {
-    setJobId(`demo-job-${Date.now()}`);
-    setToast("已创建离线演示 Job；下面模拟 SSE 事件流。 ");
-  };
-
-  const selectedCoverage = useMemo(() => subscenes.filter((item) => releaseSelection.includes(item.id)), [releaseSelection, subscenes]);
-  const publishBlocked = selectedCoverage.length === 0 || selectedCoverage.some((item) => !releaseCanInclude(item, item.id === "solvency" ? assetFixtures : assetFixtures.map((asset) => ({ ...asset, state: "READY" }))));
+  const hasSubscenes = subscenes.length > 0;
 
   return (
     <div className="scene-workspace">
@@ -53,221 +830,491 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
         <button className="back-link" onClick={() => onNavigate("/")}><span aria-hidden="true">←</span> 场景库</button>
         <div className="scene-context__title">
           <div><span className="eyebrow">SCENE / {scene.id}</span><h1>{scene.name}</h1></div>
-          <Status tone={toStatusTone(scene.status)}>{scene.statusLabel} · {scene.round}</Status>
+          <span className="round-chip">更新于 {scene.updatedAt.slice(0, 10)}</span>
         </div>
         <div className="rounds" aria-label="萃取轮次">
-          <span><Glyph name="history" size={15}/> 萃取轮次</span>
-          <button>v1.0 · 已发布</button><button className="active">v1.1 · 当前</button><button><Glyph name="plus" size={13}/> 新一轮</button>
+          <span><Glyph name="history" size={15} /> 萃取轮次</span>
+          {hasSubscenes ? selectedRounds.map((round) => (
+            <button key={round.id} className={latestRound?.id === round.id ? "active" : ""}
+              aria-current={latestRound?.id === round.id ? "true" : undefined}>
+              v{round.roundNumber} · {ROUND_STATUS_LABELS[round.status]}
+            </button>
+          )) : <span className="rounds-hint">需要至少一个子场景才能创建轮次</span>}
+          <button onClick={() => void startNewRound()} disabled={!hasSubscenes || roundCreating}
+            title={hasSubscenes ? undefined : "请先添加子场景"}>
+            {roundCreating ? <><Glyph name="plus" size={13} /> 创建中…</> : <><Glyph name="plus" size={13} /> 新一轮</>}
+          </button>
         </div>
+        {roundError ? <div className="form-error" role="alert">{roundError}</div> : null}
       </div>
 
       <div className="scene-grid-layout">
         <aside className="workflow-nav">
-          <DemoNotice compact />
           <ol>
             {steps.map((item) => (
               <li key={item.id} className={step === item.id ? "active" : step > item.id ? "done" : ""}>
                 <button onClick={() => setStep(item.id)}>
-                  <span className="workflow-nav__node">{step > item.id ? <Glyph name="check" size={14}/> : item.id}</span>
+                  <span className="workflow-nav__node">{step > item.id ? <Glyph name="check" size={14} /> : item.id}</span>
                   <span><b>{item.title}</b><small>{item.detail}</small></span>
                 </button>
               </li>
             ))}
           </ol>
-          <div className="workflow-nav__meta"><span>当前子场景</span><strong>{activeSubscene?.name}</strong><small>{activeSubscene?.revision}</small></div>
+          <div className="workflow-nav__meta">
+            <span>当前子场景</span>
+            <strong>{activeSubscene?.name ?? "未选择"}</strong>
+            <small>{latestRound ? `v${latestRound.roundNumber} · ${ROUND_STATUS_LABELS[latestRound.status]}` : "尚未创建轮次"}</small>
+          </div>
         </aside>
 
         <div className="workflow-main">
           <LineageRail active={currentLineage} compact />
-          {toast ? <div className="toast-inline" role="status"><Glyph name="check" size={15}/>{toast}<button onClick={() => setToast("")} aria-label="关闭提示"><Glyph name="close" size={14}/></button></div> : null}
 
           {step === 1 ? (
-            <StepMaterials
-              scene={scene}
-              subscenes={subscenes}
-              selected={selectedSubscene}
-              materials={materials}
-              onSelect={setSelectedSubscene}
-              onAdd={addSubscene}
-              onPartition={updatePartition}
-              onNext={() => setStep(2)}
-            />
+            <section className="workflow-step" aria-labelledby="step-materials-title">
+              <header className="step-heading">
+                <div><span>STEP 01</span><h2 id="step-materials-title">定义边界，固定本轮素材</h2><p>子场景决定萃取范围；素材按当前子场景与最新轮次绑定。</p></div>
+                <Button className="button--primary" onClick={() => setStep(2)}>进入知识萃取 <Glyph name="chevron" size={15} /></Button>
+              </header>
+              <div className="materials-layout">
+                <section className="panel">
+                  <div className="panel__head">
+                    <div><span className="panel__index">A</span><h3>场景与子场景</h3></div>
+                    <Button className="button--quiet button--small" onClick={openDialog}><Glyph name="plus" size={14} /> 添加子场景</Button>
+                  </div>
+                  <div className="field-grid">
+                    <label className="field">
+                      <span>场景名称</span>
+                      <input value={sceneName} maxLength={200}
+                        onChange={(event) => setSceneName(event.currentTarget.value)} />
+                    </label>
+                    <label className="field field--full">
+                      <span>场景描述</span>
+                      <textarea value={sceneDescription} maxLength={10000}
+                        onChange={(event) => setSceneDescription(event.currentTarget.value)} />
+                    </label>
+                    <div className="field field--full scene-save-row">
+                      <Button className="button--primary button--small" disabled={!sceneChanged || saving}
+                        onClick={() => void saveScene()}>
+                        {saving ? "保存中…" : "保存场景"}
+                      </Button>
+                      {saveFeedback ? <span className="scene-save-feedback" role="status">{saveFeedback}</span> : null}
+                    </div>
+                  </div>
+                  <div className="subscene-stack">
+                    {subscenes.map((subscene, index) => (
+                      <button key={subscene.id}
+                        className={`subscene-item ${selectedSubsceneId === subscene.id ? "active" : ""}`}
+                        onClick={() => setSelectedSubsceneId(subscene.id)}>
+                        <span className="subscene-item__index">{String(index + 1).padStart(2, "0")}</span>
+                        <span><b>{subscene.name}</b><small>{subscene.description || "暂无描述"}</small></span>
+                        <Status tone={toStatusTone("READY")}>子场景</Status>
+                      </button>
+                    ))}
+                    {!hasSubscenes ? <div className="subscene-empty">还没有子场景；点击“添加子场景”创建第一个。</div> : null}
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="panel__head">
+                    <div><span className="panel__index">B</span><h3>本轮素材</h3></div>
+                    <div className="panel__actions">
+                      <Button className="button--quiet button--small" onClick={() => void loadMaterials()}
+                        disabled={!hasSubscenes || !latestRound}><Glyph name="history" size={14} /> 刷新</Button>
+                      <Button className="button--quiet button--small" onClick={() => setUploadOpen(true)}
+                        disabled={!hasSubscenes || !latestRound}><Glyph name="plus" size={14} /> 上传素材</Button>
+                    </div>
+                  </div>
+                  {!hasSubscenes ? (
+                    <div className="subscene-empty">请先在面板 A 添加子场景。</div>
+                  ) : !latestRound ? (
+                    <div className="subscene-empty">请先为当前子场景创建“新一轮”。</div>
+                  ) : materialsError ? (
+                    <div className="materials-error" role="alert">
+                      <span>{materialsError}</span>
+                      <Button className="button--quiet button--small" onClick={() => void loadMaterials()}>重试</Button>
+                    </div>
+                  ) : materials === null ? (
+                    <div className="model-loading" aria-busy="true">正在加载素材列表…</div>
+                  ) : materials.length === 0 ? (
+                    <EmptyState title="还没有素材" detail="点击“上传素材”上传第一份文件，浏览器本地计算 SHA-256 后分片直传隔离区。" />
+                  ) : (
+                    <div className="material-list">
+                      {materials.map((material) => (
+                        <article className="material-row" key={material.id}>
+                          <span className={`file-type file-type--${material.format.toLowerCase()}`}>{material.format}</span>
+                          <div className="material-row__main">
+                            <b>{material.fileName}</b>
+                            <small>{formatBytes(material.sizeBytes)} · {partitionLabels[material.binding.partition]}
+                              {material.binding.regulatorySource ? " · 监管依据" : ""}</small>
+                          </div>
+                          <Status tone={toStatusTone(material.status)}>
+                            {MATERIAL_STATUS_LABELS[material.status] ?? material.status}
+                          </Status>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </div>
+            </section>
           ) : null}
 
           {step === 2 ? (
-            <StepExtraction
-              subscene={activeSubscene}
-              markdown={markdown}
-              isDirty={isDirty}
-              onMarkdown={setMarkdown}
-              onSave={() => { setSavedMarkdown(markdown); setToast("已在离线状态中模拟保存 Revision；没有写入后端。"); }}
-              onRun={startDemoJob}
-              events={events}
-              connection={connection}
-              progress={jobProgress}
-              onNext={() => setStep(3)}
-            />
+            <section className="workflow-step" aria-labelledby="step-extraction-title">
+              <header className="step-heading">
+                <div><span>STEP 02</span><h2 id="step-extraction-title">萃取、核对并固定 Revision</h2><p>{activeSubscene?.name ?? "未选择子场景"} · Map/Reduce 产出 KnowledgeIR；人工保存与 Proposal 采纳均由 ETag 保护。</p></div>
+              </header>
+              <section className="workflow-runner" aria-label="萃取与对齐任务">
+                <div className="workflow-runner__config">
+                  <label className="field">
+                    <span>模型配置版本</span>
+                    <select value={selectedModelConfigId} onChange={(event) => setSelectedModelConfigId(event.currentTarget.value)}>
+                      <option value="">请选择</option>
+                      {modelConfigs.map((config) => <option key={config.id} value={config.id}>{config.modelId} · v{config.version}</option>)}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Skill 版本</span>
+                    <select value={selectedSkillVersionId} onChange={(event) => setSelectedSkillVersionId(event.currentTarget.value)}>
+                      <option value="">请选择</option>
+                      {skillVersions.map((version) => <option key={version.id} value={version.id}>v{version.version} · {version.packageHash.slice(0, 10)}</option>)}
+                    </select>
+                  </label>
+                  <Button className="button--primary button--small" onClick={() => void runExtraction()}
+                    disabled={extracting || !currentRoundId || !selectedModelConfigId || !selectedSkillVersionId}>
+                    {extracting ? "萃取中…" : "开始 Map/Reduce 萃取"}
+                  </Button>
+                </div>
+                {workflowOptionsError ? <div className="form-error" role="alert">{workflowOptionsError}</div> : null}
+                {extractionJob ? (
+                  <div className="job-strip" aria-live="polite">
+                    <div className={`job-strip__pulse job-strip__pulse--${extractionStatus?.status === "SUCCEEDED" ? "closed" : "open"}`} />
+                    <div><b>萃取任务 {extractionJob.jobId}</b><small>{extractionStatus ? `${extractionStatus.stage ?? extractionStatus.status} · ${extractionStatus.percent}%` : "已排队"}</small></div>
+                  </div>
+                ) : null}
+              </section>
+               {docLoadError ? (
+                <div className="load-error" role="alert">
+                  <Glyph name="warning" size={16} />
+                  <div><b>无法加载知识文档</b><span>{docLoadError}</span></div>
+                  <Button className="button--quiet button--small" onClick={() => void loadDocument()}>重试</Button>
+                </div>
+              ) : documentLoading ? (
+                <div className="model-loading" aria-busy="true">正在加载知识文档…</div>
+              ) : (
+                <div className="editor-layout">
+                  <section className="panel doc-panel">
+                    <div className="doc-toolbar">
+                      <div>
+                        <Status tone={doc?.finalized ? "success" : isDirty ? "warning" : "neutral"}>
+                          {documentMissing ? "新文档" : doc?.finalized ? "已定稿" : isDirty ? "未保存" : "已保存"}
+                        </Status>
+                        <code>{doc ? `v${doc.revisionNumber}` : "v0 · 尚未创建"}</code>
+                        {doc?.etag ? <span>ETag: {doc.etag.slice(0, 16)}…</span> : null}
+                      </div>
+                      <div>
+                        <Button className="button--text" onClick={() => void toggleRevisions()}><Glyph name="history" size={14} /> Revision 历史</Button>
+                        <Button className="button--quiet button--small" disabled={!isDirty || savingDoc}
+                          onClick={() => void saveDocument(false)}>{savingDoc ? "保存中…" : "保存 Revision"}</Button>
+                        <Button className="button--primary button--small" disabled={savingDoc || Boolean(doc?.finalized)}
+                          onClick={() => void saveDocument(true)}>{savingDoc ? "保存中…" : "定稿"}</Button>
+                      </div>
+                    </div>
+                    <label className="field editor-note-field">
+                      <span>修订说明（可选）</span>
+                      <input value={revisionNote} maxLength={500} placeholder="记录本次改动要点，最长 500 字符"
+                        onChange={(event) => setRevisionNote(event.currentTarget.value)} />
+                    </label>
+                    {docConflict ? (
+                      <div className="dialog-warning" role="alert">
+                        <Glyph name="warning" size={15} />
+                        <span>{docSaveError}；重新加载会丢失本地未保存的修改。</span>
+                        <Button className="button--quiet button--small" onClick={() => void loadDocument()}>重新加载</Button>
+                      </div>
+                    ) : null}
+                    {docSaveError && !docConflict ? <div className="form-error" role="alert">{docSaveError}</div> : null}
+                    {docMessage ? <div className="dialog-success" role="status"><Glyph name="check" size={14} />{docMessage}</div> : null}
+                    <label className="markdown-editor">
+                      <span className="sr-only">知识文档 Markdown</span>
+                      <textarea spellCheck={false} value={editorContent} aria-label="知识文档 Markdown"
+                        onChange={(event) => setEditorContent(event.currentTarget.value)} />
+                    </label>
+                    <div className="editor-status">
+                      <span>Markdown · UTF-8</span>
+                      <span>{editorContent.split("\n").length} 行</span>
+                      <span>{sourceAnchorCount} 个 [SRC-*] 锚点</span>
+                      <span>保存时校验 kmp-* AST、KnowledgeIR Schema 与持久化来源</span>
+                    </div>
+                  </section>
+
+                  <aside className="source-panel">
+                    <div className="source-panel__head"><span><Glyph name="link" size={15} />来源定位</span><b>{doc?.sourceRefs.length ?? 0}</b></div>
+                    {!doc || doc.sourceRefs.length === 0 ? (
+                      <div className="subscene-empty">当前 Revision 尚无已验证来源；请先运行萃取。</div>
+                    ) : (
+                      doc.sourceRefs.map((ref) => (
+                        <div className="source-card" key={ref.code}>
+                          <code>[{ref.code}]</code><h3>{formatSourceLocator(ref)}</h3>
+                          <span>素材 {ref.materialId.slice(0, 8)} · Chunk {ref.chunkId.slice(0, 8)} · {ref.excerptHash.slice(0, 12)}…</span>
+                        </div>
+                      ))
+                    )}
+                    <div className="proposal-card">
+                      <span>AI 对齐 Proposal</span>
+                      <label className="field">
+                        <span>对齐动作</span>
+                        <select value={alignmentAction} onChange={(event) => setAlignmentAction(event.currentTarget.value as AlignmentAction)}>
+                          <option value="CONSISTENCY">一致性检查</option>
+                          <option value="REGULATORY">监管对齐</option>
+                          <option value="GAP_ANALYSIS">缺失分析</option>
+                          <option value="REWRITE">结构改写</option>
+                        </select>
+                      </label>
+                      <Button className="button--quiet button--small" disabled={!doc || isDirty || aligning}
+                        onClick={() => void runAlignment()}>{aligning ? "生成中…" : "生成 Proposal"}</Button>
+                      {alignmentJob ? <small>{alignmentStatus ? `${alignmentStatus.stage ?? alignmentStatus.status} · ${alignmentStatus.percent}%` : "已排队"}</small> : null}
+                      {proposalError ? <div className="form-error" role="alert">{proposalError}</div> : null}
+                    </div>
+                    {proposals.map((proposal) => {
+                      const diff = proposal.structuredPatch.diff;
+                      return (
+                        <div className="proposal-card proposal-card--ready" key={proposal.id}>
+                          <span>{proposal.action} · {proposal.status}</span>
+                          <b>规则 +{diff.addedRuleIds.length} / -{diff.removedRuleIds.length} / 改 {diff.changedRuleIds.length}</b>
+                          <p>{proposal.reason}</p>
+                          <small>流程 +{diff.addedFlowIds.length} / -{diff.removedFlowIds.length} / 改 {diff.changedFlowIds.length} · 来源 Δ {diff.sourceRefDelta}</small>
+                          {proposal.status === "READY" ? (
+                            <Button className="button--primary button--small" disabled={isDirty || adoptingProposalId !== null}
+                              onClick={() => void adoptProposal(proposal)}>
+                              {adoptingProposalId === proposal.id ? "采纳中…" : "按基线 ETag 采纳"}
+                            </Button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </aside>
+
+                  {revisionsOpen ? (
+                    <section className="revision-history" aria-label="Revision 历史">
+                      <div className="revision-history__head"><b>不可变 Revision 历史</b><span>{revisions?.length ?? 0} 个版本</span></div>
+                      {revisions === null ? <div className="model-loading" aria-busy="true">正在加载…</div> : revisions.length === 0 ? (
+                        <div className="subscene-empty">还没有 Revision；保存文档后生成第一个版本。</div>
+                      ) : (
+                        <div className="version-list">
+                          {revisions.map((revision) => (
+                            <div className="version-row" key={revision.id}>
+                              <code className="version-chip">v{revision.revisionNumber}</code>
+                              <code>{revision.contentHash.slice(0, 12)}…</code>
+                              <span>{revision.finalized ? "已定稿" : "草稿"}</span>
+                              <span>{revision.note ?? "无说明"}</span>
+                              <time>{new Date(revision.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</time>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  ) : null}
+                </div>
+              )}
+            </section>
           ) : null}
 
           {step === 3 ? (
-            <StepAssets
-              subscenes={subscenes}
-              releaseSelection={releaseSelection}
-              onSelection={setReleaseSelection}
-              publishBlocked={publishBlocked}
-              onPublish={() => setToast("离线演示不会创建真实 Release；正式 API 将冻结 Manifest。")}
-            />
+            <section className="workflow-step" aria-labelledby="step-assets-title">
+              <header className="step-heading">
+                <div><span>STEP 03</span><h2 id="step-assets-title">生成资产，检查发布覆盖</h2><p>{activeSubscene?.name ?? "未选择子场景"} · 资产由定稿文档确定性生成，发布形成不可变 Manifest。</p></div>
+              </header>
+              {assetsError ? (
+                <div className="load-error" role="alert">
+                  <Glyph name="warning" size={16} />
+                  <div><b>无法读取资产</b><span>{assetsError}</span></div>
+                  <Button className="button--quiet button--small" onClick={() => void loadAssets()}>重试</Button>
+                </div>
+              ) : assets === null ? (
+                <div className="model-loading" aria-busy="true">正在加载资产…</div>
+              ) : (
+                <>
+                  {!canGenerate ? (
+                    <div className="dialog-warning" role="note">
+                      <Glyph name="warning" size={15} />
+                      <span>
+                        {documentMissing ? "尚未创建并定稿知识文档，无法生成资产。"
+                          : doc && !doc.finalized ? "当前文档 Revision 尚未定稿，无法生成资产。"
+                          : "请先在步骤二定稿知识文档，再生成资产。"}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div className="asset-toolbar">
+                    <span>基于定稿 Revision {doc ? `v${doc.revisionNumber}` : "—"} 确定性生成；生成过程会真实追踪 Job。</span>
+                    <Button className="button--primary button--small"
+                      disabled={!canGenerate || generatingTypes !== null}
+                      onClick={() => void startGeneration(["RULE_CATALOG", "DECISION_FLOW", "SKILL_PACKAGE", "QA_PAIRS", "EVALUATION_SET"])}>
+                      {generatingTypes !== null ? "生成中…" : "生成全部"}
+                    </Button>
+                  </div>
+                  {assetJob || jobStatus ? (
+                    <div className="job-strip" aria-live="polite">
+                      <div className={`job-strip__pulse job-strip__pulse--${jobStatus ? (jobStatus.status === "SUCCEEDED" ? "closed" : "open") : "open"}`} />
+                      <div>
+                        <b>资产生成任务 {assetJob?.jobId}</b>
+                        <small>{jobStatus
+                          ? `${jobStatus.status}${jobStatus.errorCode ? ` · ${jobStatus.errorCode}` : ""}${jobStatus.stage ? ` · ${jobStatus.stage}` : ""}`
+                          : "QUEUED"} · {jobStatus?.percent ?? 0}%</small>
+                      </div>
+                      <progress className="job-strip__progress" max={100} value={jobStatus?.percent ?? 0} aria-label="任务进度" />
+                      <strong>{jobStatus?.percent ?? 0}%</strong>
+                    </div>
+                  ) : null}
+                  <div className="asset-grid">
+                    {assets.map((asset) => {
+                      const generating = generatingTypes?.includes(asset.type) ?? false;
+                      const tone = asset.status === "READY" ? "success"
+                        : asset.status === "FAILED" ? "danger"
+                        : asset.status === "BLOCKED" ? "warning"
+                        : asset.status === "GENERATING" ? "info" : "neutral";
+                      return (
+                        <article key={asset.id} className={`asset-card asset-card--${asset.status.toLowerCase()}`}>
+                          <div className="asset-card__number">v{asset.version}</div>
+                          <div className="asset-card__head">
+                            <span className="asset-symbol">{ASSET_TYPE_LABELS[asset.type]?.slice(0, 1)}</span>
+                            <Status tone={tone}>{ASSET_STATUS_LABELS[asset.status] ?? asset.status}</Status>
+                          </div>
+                          <h3>{ASSET_TYPE_LABELS[asset.type] ?? asset.type}</h3>
+                          <code>{asset.type}</code>
+                          <p>{ASSET_TYPE_DESCRIPTIONS[asset.type]}</p>
+                          {asset.status === "BLOCKED" ? (
+                            <div className="asset-card__warning"><Glyph name="warning" size={14} />
+                              {asset.type === "EVALUATION_SET"
+                                ? "评测集需要至少一份 READY 的留出（HOLDOUT）素材；缺少时会阻断发布预检。"
+                                : asset.failureReason || "前置条件缺失。"}
+                            </div>
+                          ) : null}
+                          {asset.status === "FAILED" ? (
+                            <div className="asset-card__warning"><Glyph name="warning" size={14} />
+                              {asset.failureReason || "生成失败，可单独重试。"}
+                            </div>
+                          ) : null}
+                          <footer>
+                            <span>{asset.documentRevisionId ? "已绑定定稿 Revision" : "未绑定 Revision"}</span>
+                            {asset.status === "READY" ? (
+                              <a href={`/api/v1/assets/${asset.id}/download`} target="_blank" rel="noopener noreferrer">下载 Bundle</a>
+                            ) : (asset.status === "FAILED" || asset.status === "BLOCKED") ? (
+                              <button disabled={!canGenerate || generatingTypes !== null}
+                                onClick={() => void startGeneration([asset.type])}>
+                                {generating ? "生成中…" : "重试"}
+                              </button>
+                            ) : null}
+                          </footer>
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  <section className="release-panel">
+                    <div className="release-panel__head">
+                      <div><span className="release-mark"><Glyph name="lock" size={18} /></span><div><h3>发布场景快照</h3><p>累计发布所选子场景的 READY 资产与定稿文档 Revision，生成不可变 Manifest。</p></div></div>
+                    </div>
+                    {!canPublish ? (
+                      <div className="release-panel__body-note" role="note">
+                        <Glyph name="lock" size={14} /> 仅 PUBLISHER / ADMIN 可执行发布；当前账号{currentUser ? `（${currentUser.username}）` : ""}不可发布。
+                      </div>
+                    ) : released ? (
+                      <div className="release-result">
+                        <div className="release-check"><Glyph name="check" size={16} /><span>已发布 {released.tag} · {released.coverage === "FULL" ? "全覆盖" : "部分覆盖"} · Manifest sha256 {released.manifestSha256.slice(0, 16)}…</span></div>
+                        <div className="release-result__actions">
+                          <Button className="button--quiet button--small" onClick={() => void openManifest()}>查看 Manifest</Button>
+                          <Button className="button--quiet button--small" onClick={() => void downloadManifest()}>下载 Manifest</Button>
+                        </div>
+                        {manifest ? <pre className="manifest-view">{manifest}</pre> : null}
+                      </div>
+                    ) : (
+                      <div className="release-form">
+                        <div className="release-baseline" role="note">
+                          <Glyph name="history" size={14} /> 当前发布基线：{latestRelease ? `${latestRelease.tag}（${latestRelease.manifestSha256.slice(0, 12)}…）` : "尚无发布（首次发布）"}
+                        </div>
+                        <div className="coverage-table" role="table" aria-label="子场景发布选择">
+                          {subscenes.map((subscene) => (
+                            <div className="coverage-table__row" role="row" key={subscene.id}>
+                              <span role="cell"><input type="checkbox" checked={releaseSelected.includes(subscene.id)}
+                                onChange={() => setReleaseSelected((current) => current.includes(subscene.id)
+                                  ? current.filter((id) => id !== subscene.id) : [...current, subscene.id])}
+                                aria-label={`将${subscene.name}加入本次发布`} /></span>
+                              <strong role="cell">{subscene.name}</strong>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="release-form__fields">
+                          <label className="field"><span>发布 tag</span><input value={releaseTag} maxLength={100} placeholder="v1.0" aria-label="发布 tag"
+                            onChange={(event) => setReleaseTag(event.currentTarget.value)} /></label>
+                          <label className="field"><span>发布说明</span><input value={releaseNote} maxLength={2000} placeholder="本次发布内容与变更" aria-label="发布说明"
+                            onChange={(event) => setReleaseNote(event.currentTarget.value)} /></label>
+                          <label className="field field--row"><span>我已核对发布内容与范围（二次确认）</span>
+                            <input type="checkbox" checked={releaseConfirmed}
+                              onChange={(event) => setReleaseConfirmed(event.currentTarget.checked)} aria-label="我已核对发布内容与范围" /></label>
+                        </div>
+                        {releaseError ? <div className="form-error" role="alert">{releaseError}</div> : null}
+                        <div className="release-form__actions">
+                          <Button className="button--quiet button--small" onClick={() => void runPreflight()}>发布预检</Button>
+                          {validation ? (
+                            <Button className="button--primary button--small" disabled={!validation.ready || publishing || draftStale}
+                              onClick={() => void publishRelease()}>{publishing ? "发布中…" : draftStale ? "内容已变更，请重新预检" : "确认发布"}</Button>
+                          ) : null}
+                        </div>
+                        {draftStale ? (
+                          <div className="form-error" role="alert">发布内容已变更，确认发布已禁用；请重新执行发布预检。</div>
+                        ) : null}
+                        {validation ? (
+                          <div className="preflight-result" role="status">
+                            <div className={validation.ready ? "release-check" : "release-check release-check--blocked"}>
+                              <Glyph name={validation.ready ? "check" : "warning"} size={16} />
+                              <span>{validation.ready ? "发布预检通过" : "发布预检未通过，无法发布"}</span>
+                            </div>
+                            <dl className="preflight-metrics">
+                              <div><dt>覆盖范围</dt><dd>{validation.coverage === "FULL" ? "全覆盖" : "部分覆盖"}</dd></div>
+                              <div><dt>本次选择</dt><dd>{validation.selected.length}</dd></div>
+                              <div><dt>沿用历史</dt><dd>{validation.carriedForward.length}</dd></div>
+                              <div><dt>缺失</dt><dd>{validation.missing.length}</dd></div>
+                            </dl>
+                            {validation.blockers.length > 0 ? (
+                              <ul className="preflight-list preflight-list--blockers" aria-label="阻断项">
+                                {validation.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+                              </ul>
+                            ) : null}
+                            {validation.warnings.length > 0 ? (
+                              <ul className="preflight-list" aria-label="警告">
+                                {validation.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                              </ul>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </section>
+                </>
+              )}
+            </section>
           ) : null}
         </div>
       </div>
+
+      {dialogOpen ? (
+        <AddSubSceneDialog
+          saving={subsceneSaving}
+          formError={subsceneFormError}
+          formFieldErrors={subsceneFieldErrors}
+          onClose={closeDialog}
+          onSubmit={(event) => void submitSubScene(event)}
+        />
+      ) : null}
+      {uploadOpen && selectedSubsceneId && latestRound ? (
+        <UploadMaterialDialog
+          roundId={latestRound.id}
+          subSceneId={selectedSubsceneId}
+          onClose={() => setUploadOpen(false)}
+          onUploaded={() => void loadMaterials()}
+        />
+      ) : null}
     </div>
-  );
-}
-
-function StepMaterials({ scene, subscenes, selected, materials, onSelect, onAdd, onPartition, onNext }: {
-  scene: (typeof scenes)[number];
-  subscenes: Subscene[];
-  selected: string;
-  materials: Material[];
-  onSelect: (id: string) => void;
-  onAdd: () => void;
-  onPartition: (id: string, partition: Material["partition"]) => void;
-  onNext: () => void;
-}) {
-  return (
-    <section className="workflow-step" aria-labelledby="step-materials-title">
-      <header className="step-heading"><div><span>STEP 01</span><h2 id="step-materials-title">定义边界，固定本轮素材</h2><p>子场景决定萃取范围；素材分区决定数据能进入哪条处理链路。</p></div><Button className="button--primary" onClick={onNext}>进入知识萃取 <Glyph name="chevron" size={15}/></Button></header>
-      <div className="materials-layout">
-        <section className="panel">
-          <div className="panel__head"><div><span className="panel__index">A</span><h3>场景与子场景</h3></div><Button className="button--quiet button--small" onClick={onAdd}><Glyph name="plus" size={14}/> 添加子场景</Button></div>
-          <div className="field-grid">
-            <label className="field"><span>主场景名称</span><input defaultValue={scene.name}/></label>
-            <label className="field field--full"><span>本轮萃取说明</span><textarea defaultValue={scene.description}/></label>
-          </div>
-          <div className="subscene-stack">
-            {subscenes.map((subscene, index) => (
-              <button key={subscene.id} className={`subscene-item ${selected === subscene.id ? "active" : ""}`} onClick={() => onSelect(subscene.id)}>
-                <span className="subscene-item__index">{String(index + 1).padStart(2, "0")}</span>
-                <span><b>{subscene.name}</b><small>{subscene.description}</small></span>
-                <Status tone={toStatusTone(subscene.releaseState)}>{subscene.revision}</Status>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel__head"><div><span className="panel__index">B</span><h3>本轮素材</h3></div><span className="panel__count">{materials.length} 份 · 200MB / 文件</span></div>
-          <button className="upload-zone"><Glyph name="plus" size={18}/><span><b>添加 PDF / DOCX / XLSX / TXT</b><small>正式环境通过预签名分片上传；DOC / XLS 明确不支持</small></span></button>
-          <div className="material-list">
-            {materials.map((material) => (
-              <article className="material-row" key={material.id}>
-                <span className={`file-type file-type--${material.kind.toLowerCase()}`}>{material.kind}</span>
-                <div className="material-row__main"><b>{material.name}</b><small>{material.size} · {material.locator} · {material.tag}</small></div>
-                <label className="partition-select"><span className="sr-only">{material.name}的数据分区</span><select value={material.partition} onChange={(event) => onPartition(material.id, event.target.value as Material["partition"])}>
-                  {Object.entries(partitionLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-                </select></label>
-                <Status tone="success">已解析</Status>
-              </article>
-            ))}
-          </div>
-          <div className="partition-legend"><b>数据隔离</b><span>事实素材与训练标注可参与萃取</span><span className="holdout">留出评测永不进入 Prompt、检索或 QA 生成</span></div>
-        </section>
-      </div>
-    </section>
-  );
-}
-
-function StepExtraction({ subscene, markdown, isDirty, onMarkdown, onSave, onRun, events, connection, progress, onNext }: {
-  subscene: Subscene;
-  markdown: string;
-  isDirty: boolean;
-  onMarkdown: (value: string) => void;
-  onSave: () => void;
-  onRun: () => void;
-  events: ReturnType<typeof useJobEvents>["events"];
-  connection: ReturnType<typeof useJobEvents>["connection"];
-  progress: number;
-  onNext: () => void;
-}) {
-  return (
-    <section className="workflow-step" aria-labelledby="step-extraction-title">
-      <header className="step-heading"><div><span>STEP 02</span><h2 id="step-extraction-title">萃取、核对并固定 Revision</h2><p>{subscene.name} · 所有结论都必须保留可定位来源。</p></div><div className="step-heading__actions"><Button className="button--quiet" onClick={onRun}><Glyph name="play" size={14}/>演示萃取 Job</Button><Button className="button--primary" onClick={onNext}>查看生成资产 <Glyph name="chevron" size={15}/></Button></div></header>
-
-      <div className="job-strip" aria-live="polite">
-        <div className={`job-strip__pulse job-strip__pulse--${connection}`} />
-        <div><b>{connection === "idle" ? "尚未启动任务" : connection === "closed" ? "演示 Job 已完成" : "SSE 演示事件流"}</b><small>{connection === "idle" ? "点击“演示萃取 Job”查看异步状态" : events.at(-1)?.message ?? "正在建立连接…"}</small></div>
-        <progress className="job-strip__progress" max={100} value={progress} aria-label="任务进度"/><strong>{progress}%</strong>
-      </div>
-
-      <div className="editor-layout">
-        <section className="panel document-panel">
-          <div className="document-toolbar">
-            <div><Status tone={isDirty ? "warning" : "success"}>{isDirty ? "未保存" : "已保存"}</Status><code>{subscene.revision}</code><span>ETag: W/“rev-07”</span></div>
-            <div><Button className="button--text"><Glyph name="history" size={14}/>历史 Revision</Button><Button className="button--primary button--small" disabled={!isDirty} onClick={onSave}>保存新 Revision</Button></div>
-          </div>
-          <label className="markdown-editor"><span className="sr-only">知识文档 Markdown</span><textarea spellCheck={false} value={markdown} onChange={(event) => onMarkdown(event.target.value)}/></label>
-          <div className="editor-status"><span>Markdown · UTF-8</span><span>{markdown.split("\n").length} 行</span><span>{sourceRefs.length} 个来源锚点</span></div>
-        </section>
-
-        <aside className="source-panel">
-          <div className="source-panel__head"><span><Glyph name="link" size={15}/>来源定位</span><b>{sourceRefs.length}</b></div>
-          {sourceRefs.map((source) => (
-            <article key={source.id} className="source-card">
-              <code>[{source.id}]</code><h3>{source.source}</h3><span>{source.locator}</span><blockquote>{source.excerpt}</blockquote><button>在原文中定位 <span aria-hidden="true">↗</span></button>
-            </article>
-          ))}
-          <div className="proposal-card"><span>AI 对齐 Proposal</span><b>2 条建议等待确认</b><p>建议只会生成结构化 Diff；旧 baseRevision 不会覆盖新内容。</p><button>查看 Proposal-014</button></div>
-        </aside>
-      </div>
-
-      {events.length > 0 ? <section className="event-console"><div className="event-console__head"><span>SSE EVENT REPLAY</span><code>demo-job / Last-Event-ID</code></div>{events.map((event) => <div key={event.eventId}><time>{event.createdAt}</time><code>{event.type}</code><span>{event.stage}</span><b>{event.percent}%</b><p>{event.message}</p></div>)}</section> : null}
-    </section>
-  );
-}
-
-function StepAssets({ subscenes, releaseSelection, onSelection, publishBlocked, onPublish }: {
-  subscenes: Subscene[];
-  releaseSelection: string[];
-  onSelection: (ids: string[]) => void;
-  publishBlocked: boolean;
-  onPublish: () => void;
-}) {
-  const toggle = (id: string) => onSelection(releaseSelection.includes(id) ? releaseSelection.filter((item) => item !== id) : [...releaseSelection, id]);
-  return (
-    <section className="workflow-step" aria-labelledby="step-assets-title">
-      <header className="step-heading"><div><span>STEP 03</span><h2 id="step-assets-title">生成资产，检查发布覆盖</h2><p>每类资产独立重试并固定来源 Revision；发布后形成不可变 Manifest。</p></div><Button className="button--quiet"><Glyph name="download" size={15}/>下载就绪资产</Button></header>
-      <div className="asset-grid">
-        {assetFixtures.map((asset, index) => (
-          <article key={asset.id} className={`asset-card asset-card--${asset.state.toLowerCase()}`}>
-            <div className="asset-card__number">A{String(index + 1).padStart(2, "0")}</div>
-            <div className="asset-card__head"><span className="asset-symbol">{["#", "↳", "{}", "Q", "✓"][index]}</span><Status tone={toStatusTone(asset.state)}>{{ READY: "已就绪", BLOCKED: "阻断", GENERATING: "生成中", FAILED: "失败" }[asset.state]}</Status></div>
-            <h3>{asset.name}</h3><code>{asset.format}</code><p>{asset.description}</p>
-            {asset.detail ? <div className="asset-card__warning"><Glyph name="warning" size={14}/>{asset.detail}</div> : null}
-            <footer><span>{asset.sourceRevision}</span><button disabled={asset.state === "BLOCKED"}>{asset.state === "READY" ? "查看资产" : "补充留出数据"}</button></footer>
-          </article>
-        ))}
-      </div>
-
-      <section className="release-panel">
-        <div className="release-panel__head"><div><span className="release-mark"><Glyph name="lock" size={18}/></span><div><h3>发布覆盖矩阵</h3><p>本次选择与历史版本合并为 Scene 级累计快照。</p></div></div><code>next: v1.1</code></div>
-        <div className="coverage-table" role="table" aria-label="子场景发布覆盖">
-          <div className="coverage-table__head" role="row"><span role="columnheader">本次</span><span role="columnheader">子场景</span><span role="columnheader">文档 Revision</span><span role="columnheader">五类资产</span><span role="columnheader">发布后来源</span></div>
-          {subscenes.map((subscene) => {
-            const blocked = subscene.releaseState === "BLOCKED";
-            const selected = releaseSelection.includes(subscene.id);
-            return <div className="coverage-table__row" role="row" key={subscene.id}>
-              <span role="cell"><input type="checkbox" checked={selected} onChange={() => toggle(subscene.id)} aria-label={`将${subscene.name}加入本次发布`}/></span>
-              <strong role="cell">{subscene.name}</strong><code role="cell">{subscene.revision}</code>
-              <span role="cell"><Status tone={blocked ? "warning" : "success"}>{blocked ? "4 / 5 · 阻断" : "5 / 5 · 就绪"}</Status></span>
-              <span role="cell">{selected ? "本次 v1.1" : subscene.releaseState === "PUBLISHED" ? "沿用 v1.0" : "尚未覆盖"}</span>
-            </div>;
-          })}
-        </div>
-        <div className="release-panel__footer">
-          <div className={publishBlocked ? "release-check release-check--blocked" : "release-check"}><Glyph name={publishBlocked ? "warning" : "check"} size={16}/><span>{publishBlocked ? "发布预检未通过：移除阻断项或补齐评测资产。" : "发布预检通过，将冻结内容和配置哈希。"}</span></div>
-          <div><Button className="button--quiet">预览 Manifest</Button><Button className="button--primary" disabled={publishBlocked} onClick={onPublish}>发布选中范围</Button></div>
-        </div>
-      </section>
-    </section>
   );
 }

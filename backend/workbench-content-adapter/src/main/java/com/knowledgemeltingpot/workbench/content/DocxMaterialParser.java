@@ -2,6 +2,7 @@ package com.knowledgemeltingpot.workbench.content;
 
 import com.knowledgemeltingpot.workbench.application.port.MaterialParseException;
 import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
+import com.knowledgemeltingpot.workbench.domain.ChunkLocator;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -29,9 +30,9 @@ class DocxMaterialParser {
                         String text = paragraph.getText().trim();
                         if (!text.isEmpty()) {
                             segments.add(new MaterialParserPort.ParsedSegment(segments.size(),
-                                    new MaterialParserPort.SegmentLocator(
-                                            MaterialParserPort.LocatorType.DOCX_PARAGRAPH,
-                                            null, paragraphIndex, null, null, null, null, null, null, null),
+                                    new ChunkLocator(
+                                            ChunkLocator.LocatorType.DOCX_PARAGRAPH,
+                                            null, paragraphIndex, null, null, null, null, null, null, null, null),
                                     text));
                         }
                         paragraphIndex++;
@@ -46,9 +47,9 @@ class DocxMaterialParser {
                                 String text = cells.get(col).getText().trim();
                                 if (!text.isEmpty()) {
                                     segments.add(new MaterialParserPort.ParsedSegment(segments.size(),
-                                            new MaterialParserPort.SegmentLocator(
-                                                    MaterialParserPort.LocatorType.DOCX_TABLE_CELL,
-                                                    null, null, null, row, row, col, col, null, null),
+                                            new ChunkLocator(
+                                                    ChunkLocator.LocatorType.DOCX_TABLE_CELL,
+                                                    null, null, tableIndex, null, row, row, col, col, null, null),
                                             text));
                                 }
                             }

@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import type { PropsWithChildren } from "react";
 import type { GlyphName } from "./Ui";
-import { DemoNotice, Glyph } from "./Ui";
+import { Glyph } from "./Ui";
+import { getCurrentUser } from "../lib/api";
+import type { AuthenticatedUser } from "../lib/api";
 
 interface NavItem {
   href: string;
@@ -10,7 +13,6 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: "/", label: "工作台", icon: "grid" },
-  { href: "/scenes/corporate-loan-classification", label: "场景流程", icon: "scene" },
   { href: "/agents", label: "智能体", icon: "bot" },
   { href: "/skills", label: "Skill", icon: "skill" },
   { href: "/models", label: "模型", icon: "model" },
@@ -18,8 +20,42 @@ const navItems: NavItem[] = [
   { href: "/audit", label: "审计", icon: "audit" },
 ];
 
+function roleLabel(user: AuthenticatedUser | null | undefined): string | null {
+  if (!user) return null;
+  if (user.roles.includes("ADMIN")) return "管理员";
+  if (user.roles.includes("PUBLISHER")) return "发布";
+  if (user.roles.includes("OPERATOR")) return "运营";
+  return "无角色";
+}
+
 export function Shell({ pathname, onNavigate, children }: PropsWithChildren<{ pathname: string; onNavigate: (href: string) => void }>) {
   const isActive = (href: string) => href === "/" ? pathname === "/" : pathname.startsWith(href.split("/").slice(0, 2).join("/"));
+  // undefined = still loading; null = no session or read failure -> neutral identity.
+  const [user, setUser] = useState<AuthenticatedUser | null | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCurrentUser()
+      .then((loaded) => {
+        if (!cancelled) setUser(loaded);
+      })
+      .catch(() => {
+        if (!cancelled) setUser(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const identity = user === undefined
+    ? "…"
+    : user === null
+      ? "未识别身份"
+      : user.displayName;
+  const avatarLabel = user === null || user === undefined
+    ? "当前身份未识别"
+    : `当前用户：${user.displayName}`;
+  const label = roleLabel(user);
 
   return (
     <div className="app-shell">
@@ -42,8 +78,8 @@ export function Shell({ pathname, onNavigate, children }: PropsWithChildren<{ pa
             </a>
           ))}
         </nav>
-        <button className="profile-chip" aria-label="当前用户：曹征">
-          <span>曹</span><i className="presence" />
+        <button className="profile-chip" aria-label={avatarLabel}>
+          <span>{identity.slice(0, 1)}</span><i className="presence" />
         </button>
       </aside>
 
@@ -53,7 +89,6 @@ export function Shell({ pathname, onNavigate, children }: PropsWithChildren<{ pa
             <strong>知识萃取智能体工作台</strong>
             <span>KNOWLEDGE DISTILLATION</span>
           </div>
-          <DemoNotice compact />
           <div className="topbar__actions">
             <label className="global-search">
               <span className="sr-only">搜索</span>
@@ -62,7 +97,9 @@ export function Shell({ pathname, onNavigate, children }: PropsWithChildren<{ pa
               <kbd>⌘ K</kbd>
             </label>
             <button className="icon-button" aria-label="通知"><Glyph name="bell" /></button>
-            <button className="avatar-button" aria-label="用户菜单">曹征 <span>管理员</span></button>
+            <button className="avatar-button" aria-label={avatarLabel}>
+              {identity}{label ? <span>{label}</span> : null}
+            </button>
           </div>
         </header>
         <main id="main-content" className="main-content" tabIndex={-1}>{children}</main>

@@ -1,9 +1,9 @@
 package com.knowledgemeltingpot.workbench.application.service;
 
+import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
 import com.knowledgemeltingpot.workbench.domain.Material;
 import com.knowledgemeltingpot.workbench.domain.MaterialUploadIntent;
 import com.knowledgemeltingpot.workbench.domain.RoundMaterial;
-import java.net.URL;
 import java.util.List;
 
 public record MaterialUploadIntentResult(
@@ -15,11 +15,11 @@ public record MaterialUploadIntentResult(
         String uploadMode,
         String capabilityStatus,
         String messageCode,
-        List<URL> presignedUrls) {
+        List<ObjectStoragePort.PresignedPart> presignedParts) {
 
     public MaterialUploadIntentResult {
         bindings = List.copyOf(bindings);
-        presignedUrls = presignedUrls == null ? List.of() : List.copyOf(presignedUrls);
+        presignedParts = presignedParts == null ? List.of() : List.copyOf(presignedParts);
     }
 
     public MaterialUploadIntentResult(MaterialUploadIntent intent, Material material,

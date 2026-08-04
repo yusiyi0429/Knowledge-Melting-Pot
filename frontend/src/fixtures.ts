@@ -1,14 +1,11 @@
 import type {
   AgentConfig,
   Asset,
-  AuditRecord,
   Material,
-  ModelConnection,
   SceneSummary,
   SkillSummary,
   SourceRef,
   Subscene,
-  UserSummary,
 } from "./domain";
 
 export const scenes: SceneSummary[] = [
@@ -248,24 +245,4 @@ export const skills: SkillSummary[] = [
   { id: "sk-3", name: "冲突检测", description: "识别规则冲突、口径差异和缺失依据，输出 Proposal。", kind: "TEMPLATE", version: "v1.2", packageHash: "sha256:d3a8…00ce" },
   { id: "sk-4", name: "对公贷款·知识萃取", description: "面向五级分类的规则与研判流程场景实例。", kind: "INSTANCE", version: "v1.1", parent: "规则萃取 v2.0", scene: "对公贷款五级分类", packageHash: "sha256:2ce8…7fd0" },
   { id: "sk-5", name: "对公贷款·冲突检测", description: "按监管依据优先级检查分类口径和例外。", kind: "INSTANCE", version: "v1.0", parent: "冲突检测 v1.2", scene: "对公贷款五级分类", packageHash: "sha256:fa60…d23c" },
-];
-
-export const models: ModelConnection[] = [
-  { id: "mdl-1", name: "Qwen2.5-72B", provider: "DashScope", modelId: "qwen2.5-72b-instruct", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", state: "CONNECTED", credentialConfigured: true },
-  { id: "mdl-2", name: "DeepSeek-V3", provider: "OpenAI-compatible", modelId: "deepseek-chat", baseUrl: "https://api.deepseek.com/v1", state: "CONNECTED", credentialConfigured: true },
-  { id: "mdl-3", name: "企业模型网关", provider: "OpenAI-compatible", modelId: "knowledge-general", baseUrl: "https://llm-gateway.corp.example/v1", state: "UNTESTED", credentialConfigured: false },
-];
-
-export const users: UserSummary[] = [
-  { id: "usr-1", username: "caozheng", name: "曹征", roles: ["OPERATOR", "PUBLISHER", "ADMIN"], state: "ENABLED", createdAt: "2026-07-01" },
-  { id: "usr-2", username: "zhangsan", name: "张三", roles: ["OPERATOR", "PUBLISHER"], state: "ENABLED", createdAt: "2026-07-03" },
-  { id: "usr-3", username: "linan", name: "李楠", roles: ["OPERATOR"], state: "ENABLED", createdAt: "2026-07-12" },
-  { id: "usr-4", username: "audit-viewer", name: "审计观察员", roles: [], state: "DISABLED", createdAt: "2026-07-16" },
-];
-
-export const audits: AuditRecord[] = [
-  { id: "aud-1", at: "2026-08-03 10:42:18", actor: "曹征", actorType: "USER", action: "保存文档 Revision", target: "偿债能力与担保因素综合研判", revision: "rev-07", traceId: "tr-8f0d2a" },
-  { id: "aud-2", at: "2026-08-03 10:39:04", actor: "冲突检测与对齐智能体", actorType: "AGENT", action: "生成对齐 Proposal", target: "proposal-014", revision: "base rev-06", traceId: "tr-887d10" },
-  { id: "aud-3", at: "2026-08-03 10:31:52", actor: "Job Worker", actorType: "SYSTEM", action: "完成知识萃取", target: "job-d31a", revision: "rev-06", traceId: "tr-235cf4" },
-  { id: "aud-4", at: "2026-08-02 17:28:33", actor: "张三", actorType: "USER", action: "发布部分场景", target: "release-v1.0", revision: "manifest 4b28…0e19", traceId: "tr-cf933a" },
 ];

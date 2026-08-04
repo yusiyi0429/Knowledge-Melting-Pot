@@ -1,0 +1,74 @@
+# Destructive-recovery verification overlay. Used ONLY by
+# scripts/verify-destructive-recovery.sh under the explicit project name
+# kmp-destructive-check. It must never be started under the production project
+# name or any other shared stack.
+#
+# Changes vs deploy/compose/compose.yaml:
+#   - short worker lease (fast re-claim after kill -9) and concurrency 1 so a
+#     second worker is required for parallel ingest;
+#   - a second ingest worker (worker-b) for the same-content concurrent
+#     deduplication scenario;
+#   - MinIO host ports moved to 19000/19001 so the check never collides with a
+#     running local stack (kmp-validation, kmp-runtime-check, ...).
+name: knowledge-melting-pot-destructive
+
+services:
+  minio:
+    ports: !override
+      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:19001:9001"
+    # Docker 29+ silently drops host port publishes for containers attached
+    # only to internal networks; a non-internal network is required for the
+    # script to PUT uploaded parts from the host to the presigned URL.
+    networks:
+      - backend
+      - destructive-edge
+
+  worker:
+    environment:
+      WORKBENCH_WORKER_LEASE_DURATION: PT15S
+      WORKBENCH_WORKER_MAX_CONCURRENCY: "1"
+
+  worker-b:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker.Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: compose
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${KMP_DB_NAME:-knowledge_melting_pot}
+      SPRING_DATASOURCE_USERNAME: ${KMP_DB_USER:-kmp}
+      SPRING_DATASOURCE_PASSWORD: ${KMP_DB_PASSWORD:-kmp-local-only}
+      SPRING_FLYWAY_ENABLED: "false"
+      WORKBENCH_OBJECT_STORAGE_ENABLED: "true"
+      WORKBENCH_OBJECT_STORAGE_INTERNAL_ENDPOINT: http://minio:9000
+      WORKBENCH_OBJECT_STORAGE_PUBLIC_ENDPOINT: ${KMP_MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      WORKBENCH_OBJECT_STORAGE_REGION: us-east-1
+      WORKBENCH_OBJECT_STORAGE_ACCESS_KEY: ${KMP_MINIO_ROOT_USER:-kmp-local}
+      WORKBENCH_OBJECT_STORAGE_SECRET_KEY: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+      WORKBENCH_OBJECT_STORAGE_PATH_STYLE: "true"
+      WORKBENCH_CONTENT_CLAMAV_ENABLED: "true"
+      WORKBENCH_CONTENT_CLAMAV_HOST: clamav
+      WORKBENCH_CONTENT_CLAMAV_PORT: "3310"
+      WORKBENCH_MATERIAL_INGEST_ENABLED: "true"
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST,GENERATE_ASSET,GENERATE_ALL"
+      WORKBENCH_WORKER_ID: worker-b-destructive
+      WORKBENCH_WORKER_LEASE_DURATION: PT15S
+      WORKBENCH_WORKER_MAX_CONCURRENCY: "1"
+      KMP_AGENT_ENABLED: "false"
+      KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
+      KMP_ALLOWED_MODEL_HOSTS: ${KMP_ALLOWED_MODEL_HOSTS:-api.openai.com,dashscope.aliyuncs.com}
+    secrets: [kmp_model_master_key]
+    depends_on:
+      api: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      clamav: { condition: service_healthy }
+    stop_grace_period: 45s
+    networks: [backend]
+
+networks:
+  # Non-internal companion network so the isolated project's MinIO host ports
+  # are actually published (internal-only networks drop publishes on Docker
+  # 29+). Exclusive to the destructive-check project name.
+  destructive-edge:

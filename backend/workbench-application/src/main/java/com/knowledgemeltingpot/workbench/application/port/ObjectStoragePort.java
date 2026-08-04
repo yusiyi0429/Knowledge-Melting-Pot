@@ -69,9 +69,7 @@ public interface ObjectStoragePort {
             if (url == null) {
                 throw new IllegalArgumentException("url is required");
             }
-            if (requiredHeaders == null) {
-                requiredHeaders = Map.of();
-            }
+            requiredHeaders = requiredHeaders == null ? Map.of() : Map.copyOf(requiredHeaders);
         }
     }
 

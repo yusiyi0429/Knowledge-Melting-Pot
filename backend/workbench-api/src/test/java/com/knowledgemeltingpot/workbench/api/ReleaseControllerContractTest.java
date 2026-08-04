@@ -49,4 +49,35 @@ class ReleaseControllerContractTest {
 
         assertThat(json).contains("\"finalize\":true").doesNotContain("finalizeRevision");
     }
+
+    @Test
+    void latestEndpointReturnsTheCurrentBaselineRelease() {
+        com.knowledgemeltingpot.workbench.application.service.ReleaseService service =
+                org.mockito.Mockito.mock(com.knowledgemeltingpot.workbench.application.service.ReleaseService.class);
+        Release release = new Release(UUID.randomUUID(), UUID.randomUUID(), "v1.0", ReleaseStatus.PUBLISHED,
+                ReleaseCoverage.PARTIAL, "首次", UUID.randomUUID(), "{}", "m123", UUID.randomUUID(),
+                Instant.parse("2026-08-03T00:00:00Z"), Instant.parse("2026-08-03T00:00:00Z"));
+        org.mockito.Mockito.when(service.findLatestPublished(release.sceneId()))
+                .thenReturn(java.util.Optional.of(release));
+        ReleaseController controller = new ReleaseController(service,
+                org.mockito.Mockito.mock(com.knowledgemeltingpot.workbench.api.security.CurrentUser.class));
+
+        ReleaseController.ReleaseResponse response = controller.latest(release.sceneId());
+
+        assertThat(response.id()).isEqualTo(release.id());
+        assertThat(response.manifestSha256()).isEqualTo("m123");
+    }
+
+    @Test
+    void latestEndpointThrowsNotFoundWhenSceneHasNoPublishedRelease() {
+        com.knowledgemeltingpot.workbench.application.service.ReleaseService service =
+                org.mockito.Mockito.mock(com.knowledgemeltingpot.workbench.application.service.ReleaseService.class);
+        java.util.UUID sceneId = java.util.UUID.randomUUID();
+        org.mockito.Mockito.when(service.findLatestPublished(sceneId)).thenReturn(java.util.Optional.empty());
+        ReleaseController controller = new ReleaseController(service,
+                org.mockito.Mockito.mock(com.knowledgemeltingpot.workbench.api.security.CurrentUser.class));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.latest(sceneId))
+                .isInstanceOf(com.knowledgemeltingpot.workbench.application.error.NotFoundException.class);
+    }
 }

@@ -76,7 +76,7 @@ docker exec "$api_id" wget -qO- \
   http://localhost:8080/actuator/health/readiness | jq -c '{status}'
 
 docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
-  "SELECT version || ':' || success FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6') ORDER BY installed_rank;"
+  "SELECT version || ':' || success FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11') ORDER BY installed_rank;"
 
 docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
   "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('spring_session','spring_session_attributes');"
@@ -92,7 +92,7 @@ docker inspect "$api_id" --format '{{json .HostConfig.PortBindings}}'
 docker inspect "$worker_id" --format '{{json .HostConfig.PortBindings}}'
 ```
 
-预期迁移输出为 `1:t` 到 `6:t`，会话表计数为 `2`，管理员检查为 `true:true`，两个端口检查均为 `{}`。Worker 必须稳定运行且不得创建 SDK 默认的 `/app/logs`。
+预期迁移输出为 `1:t` 到 `11:t`，会话表计数为 `2`，管理员检查为 `true:true`，两个端口检查均为 `{}`。Worker 必须稳定运行且不得创建 SDK 默认的 `/app/logs`。
 
 再通过 Web 反向代理执行真实 CSRF + Session 登录，并确认两类 Cookie 都带 `Secure`。现代浏览器和 curl 将 localhost 视为安全来源；其他纯 HTTP 调试地址必须显式设置 `KMP_SECURE_COOKIES=false`，不得把该覆盖用于正式部署。请求正文经 stdin 传递，不把密码拼进 curl 参数；Cookie jar 使用临时文件：
 
@@ -155,7 +155,39 @@ unset KMP_BOOTSTRAP_ADMIN_USERNAME KMP_BOOTSTRAP_ADMIN_PASSWORD KMP_MODEL_MASTER
 
 ## 最近一次本机证据
 
-2026-08-03 使用一次性 Secret 和独立项目 `kmp-runtime-check` 执行仓库脚本并通过：API readiness 为 `UP`，Flyway V1–V6 全部成功，初始管理员唯一且要求首次改密，XSRF 与 Session Cookie 均带 `Secure`，真实 CSRF 登录返回 204 并写入一条 Spring Session；Worker 稳定运行、Agent Runtime 与 Worker Flyway 均关闭、没有 `/app/logs`，API/Worker 无宿主端口，日志未命中三项一次性 Secret。验证结束后该项目的容器和数据卷均为 0。
+2026-08-04 使用一次性 Secret 和独立项目 `kmp-runtime-check` 重新构建三张镜像并执行仓库脚本通过：输出 `RUNTIME_OK readiness=UP`，Flyway V1–V11 全部成功，初始管理员唯一且要求首次改密，XSRF 与 Session Cookie 均带 `Secure`，真实 CSRF 登录返回 204 并写入一条 Spring Session；Worker 稳定运行、Agent Runtime 与 Worker Flyway 均关闭、没有 `/app/logs`，API/Worker 无宿主端口，日志未命中三项一次性 Secret。验证结束后输出 `CLEANUP_OK containers=0 volumes=0`。
+
+## KnowledgeIR、萃取与对齐闭环
+
+`scripts/verify-knowledge-workflow.sh` 使用专属 Compose 项目 `kmp-knowledge-check`、独立端口和一次性数据卷，生成一份本地 TXT 监管素材并验证：
+
+```bash
+scripts/verify-knowledge-workflow.sh
+```
+
+- 真实预签名分片上传、MinIO、ClamAV、Tika/TXT 解析与 READY Chunk。
+- 冻结模型/Skill 版本和素材的 Map/Reduce Job，持久化 Map、Reduce、KnowledgeIR 与 SourceRef。
+- 无结构块的 Markdown 返回 422 且不新增 Revision。
+- 监管 AlignmentProposal 含结构化 Diff；旧 ETag 采纳返回 412，正确 ETag 生成新 Revision 和不可变 adoption 记录。
+- 数据库断言 Flyway V1–V11、两份 Revision 投影、Holdout 零混入；退出时断言容器和卷均为零。
+
+该门禁通过显式 `workbench.agent.test-stub-enabled=true` 使用确定性本地 Adapter，只验证编排、持久化、安全边界和协议，不调用外部模型，也不代表模型质量。2026-08-04 最新运行输出 `KNOWLEDGE_WORKFLOW_OK ... invalid_markdown=422 stale_adopt=412 proposal=ADOPTED`，随后输出 `CLEANUP_OK containers=0 volumes=0`。
+
+## 崩溃续跑与同哈希去重破坏性演练
+
+独立的 `scripts/verify-destructive-recovery.sh` 在专属 Compose 项目 `kmp-destructive-check` 中执行两个真实破坏性场景，全程不触碰 `kmp-validation`、`kmp-runtime-check` 或任何其他栈，退出时只清理该项目自己的容器和数据卷：
+
+```bash
+scripts/verify-destructive-recovery.sh
+```
+
+- RECOVERY：上传约 7MB 合成 TXT 触发 INGEST，Worker 处理中 `docker kill --signal=KILL` 并删除容器，再 `up` 出一个全新 Worker；新 Worker 在短租约（PT15S）到期后重领租约并幂等续跑。终态断言：job `SUCCEEDED`、`attempt=2`、存在两次 started 事件、`material_blob` 恰一行、`material_chunk` 恰一组（行数 = ceil(行数/100)）、Material `READY`、MinIO 验证桶恰一个对象。
+- DEDUP：启动第二个 Worker（`worker-b`），上传两份字节相同（不同文件名）的 TXT；两个 Worker 并发摄取。终态断言 started 事件来自两个不同 Worker，同一 sha256 只有一个 blob、一份 chunk、一个 MinIO 对象，两个 Material 均 `READY` 且共享同一 `blob_id`。
+- Embedding 未配置门禁：断言 job 事件包含稳定 `EMBEDDING_PROVIDER_UNCONFIGURED`、`chunk_embedding` 零行、且不存在 `EMBEDDINGS_COMMITTED` 伪成功事件。
+
+成功输出以 `RECOVERY_OK`、`DEDUP_OK`、`EMBEDDING_UNCONFIGURED_OK` 结尾，清理后输出 `CLEANUP_OK containers=0 volumes=0`。脚本使用 `deploy/compose/destructive-override.yaml`（短租约、单并发、第二 Worker、MinIO 主机端口 19000/19001），该覆盖文件不得用于生产或共享栈。
+
+2026-08-04 以最新源码重新构建 API、Worker、Worker-B 和 Web 镜像后通过：`RECOVERY_OK` 显示 `attempt=2`、`started_events=2`、700 个 Chunk；`DEDUP_OK` 显示 `workers=2`、一个 Blob、700 个 Chunk、两个 READY Material 和一个对象；Embedding 诊断出现 3 次且向量表为 0 行。最终输出 `DESTRUCTIVE_OK` 与 `CLEANUP_OK containers=0 volumes=0`。
 
 ## 依赖收敛与 SBOM
 

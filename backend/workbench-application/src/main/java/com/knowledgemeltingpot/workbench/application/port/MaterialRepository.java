@@ -37,4 +37,11 @@ public interface MaterialRepository {
     boolean incrementCompletionAttempt(UUID intentId);
 
     boolean abortIntent(UUID intentId, Instant abortedAt);
+
+    /**
+     * Workbench listing for a round + sub-scene, including every material status
+     * (PENDING_UPLOAD, UPLOADED, SCANNING, FAILED, INACTIVE) and its binding.
+     * Unlike the READY-only extraction selections, this must not filter by status.
+     */
+    List<MaterialSelection> findWorkbenchMaterials(UUID roundId, UUID subSceneId);
 }

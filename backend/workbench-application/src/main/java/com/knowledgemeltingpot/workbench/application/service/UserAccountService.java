@@ -81,6 +81,18 @@ public class UserAccountService {
                 Instant.now(clock)));
     }
 
+    @Transactional
+    public UserAccount resetPassword(UUID actorId, UUID userId, String newPassword) {
+        UserAccount current = requireUser(userId);
+        if (actorId.equals(userId)) {
+            throw new ConflictException(
+                    "an administrator cannot reset their own password; use /api/v1/auth/password");
+        }
+        validatePassword(newPassword);
+        return userRepository.save(current.withPasswordHash(passwordHasher.hash(newPassword), true,
+                Instant.now(clock)));
+    }
+
     private UserAccount requireUser(UUID userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("user does not exist"));

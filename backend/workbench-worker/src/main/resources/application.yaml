@@ -25,6 +25,7 @@ workbench:
     max-concurrency: ${KMP_WORKER_CONCURRENCY:4}
   agent:
     enabled: ${KMP_AGENT_ENABLED:false}
+    test-stub-enabled: ${KMP_AGENT_TEST_STUB_ENABLED:false}
     provider: ${KMP_AGENT_PROVIDER:OPENAI_COMPATIBLE}
     model-name: ${KMP_AGENT_MODEL_NAME:}
     api-base: ${KMP_AGENT_API_BASE:}

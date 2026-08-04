@@ -12,7 +12,7 @@ import { UsersPage } from "./pages/UsersPage";
 import { Button, Glyph } from "./components/Ui";
 
 function NotFound({ onNavigate }: { onNavigate: (href: string) => void }) {
-  return <div className="page not-found"><span>404</span><h1>没有找到这个页面</h1><p>地址可能已变化。返回工作台继续查看离线演示。</p><Button className="button--primary" onClick={() => onNavigate("/")}><Glyph name="grid"/>返回工作台</Button></div>;
+  return <div className="page not-found"><span>404</span><h1>没有找到这个页面</h1><p>地址可能已变化，或对应场景已被删除。返回工作台查看场景列表。</p><Button className="button--primary" onClick={() => onNavigate("/")}><Glyph name="grid"/>返回工作台</Button></div>;
 }
 
 export default function App() {
@@ -25,7 +25,12 @@ export default function App() {
 
   let page;
   if (pathname === "/") page = <DashboardPage onNavigate={navigate}/>;
-  else if (pathname.startsWith("/scenes/")) page = <ScenePage sceneId={pathname.split("/")[2] ?? "corporate-loan-classification"} onNavigate={navigate}/>;
+  else if (pathname.startsWith("/scenes/")) {
+    const sceneId = pathname.split("/")[2];
+    page = sceneId
+      ? <ScenePage sceneId={sceneId} onNavigate={navigate}/>
+      : <NotFound onNavigate={navigate}/>;
+  }
   else if (pathname === "/agents") page = <AgentsPage/>;
   else if (pathname === "/skills") page = <SkillsPage/>;
   else if (pathname === "/models") page = <ModelsPage/>;

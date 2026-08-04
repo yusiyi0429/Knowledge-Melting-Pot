@@ -93,7 +93,8 @@ public class JdbcModelConnectionRepository implements ModelConnectionRepository 
                 SET validation_status = 'CONFIGURATION_VALIDATED', last_validated_at = :validatedAt,
                     updated_at = :validatedAt
                 WHERE id = :id AND deleted_at IS NULL
-                RETURNING """ + CONNECTION_COLUMNS)
+                RETURNING
+                """ + CONNECTION_COLUMNS)
                 .param("id", id)
                 .param("validatedAt", JdbcTimes.toJdbc(validatedAt))
                 .query(JdbcModelConnectionRepository::mapConnection)
@@ -127,7 +128,8 @@ public class JdbcModelConnectionRepository implements ModelConnectionRepository 
                 SELECT :id, next_version.id, next_version.value, :modelId, :temperature,
                        :maxOutputTokens, :createdBy, :createdAt
                 FROM next_version
-                RETURNING """ + VERSION_COLUMNS)
+                RETURNING
+                """ + VERSION_COLUMNS)
                 .param("id", id)
                 .param("modelConnectionId", modelConnectionId)
                 .param("modelId", modelId)

@@ -22,6 +22,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${KMP_MINIO_ROOT_USER:-kmp-local}
       MINIO_ROOT_PASSWORD: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
+      # Local browser uploads (Vite dev/preview + API ports). Exact origins only,
+      # never wildcard. This MinIO release supports only this CORS key.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${KMP_MINIO_CORS_ALLOW_ORIGIN:-http://localhost:8088,http://localhost:5173,http://localhost:4173,http://127.0.0.1:8088,http://127.0.0.1:5173,http://127.0.0.1:4173}
     volumes:
       - object-data:/data
     ports:
@@ -38,7 +41,9 @@ services:
     image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     depends_on:
       minio: { condition: service_healthy }
-    entrypoint: ["/bin/sh", "-c", "mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} && mc mb --ignore-existing local/kmp-quarantine local/kmp-verified-knowledge local/kmp-verified-holdout local/kmp-assets"]
+    entrypoint: ["/bin/sh", "/init/minio-init.sh"]
+    volumes:
+      - ./minio-init.sh:/init/minio-init.sh:ro
     environment:
       MINIO_ROOT_USER: ${KMP_MINIO_ROOT_USER:-kmp-local}
       MINIO_ROOT_PASSWORD: ${KMP_MINIO_ROOT_PASSWORD:-kmp-local-only}
@@ -112,8 +117,9 @@ services:
       WORKBENCH_CONTENT_CLAMAV_HOST: clamav
       WORKBENCH_CONTENT_CLAMAV_PORT: "3310"
       WORKBENCH_MATERIAL_INGEST_ENABLED: "true"
-      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST"
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST,EXTRACT,REEXTRACT,ALIGN,GENERATE_ASSET,GENERATE_ALL"
       KMP_AGENT_ENABLED: "false"
+      KMP_AGENT_TEST_STUB_ENABLED: ${KMP_AGENT_TEST_STUB_ENABLED:-false}
       KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
       KMP_ALLOWED_MODEL_HOSTS: ${KMP_ALLOWED_MODEL_HOSTS:-api.openai.com,dashscope.aliyuncs.com}
     secrets: [kmp_model_master_key]
@@ -131,7 +137,7 @@ services:
       context: ../..
       dockerfile: deploy/compose/web.Dockerfile
     ports:
-      - "8088:80"
+      - "${KMP_WEB_PORT:-8088}:80"
     depends_on:
       api: { condition: service_healthy }
     networks: [edge]

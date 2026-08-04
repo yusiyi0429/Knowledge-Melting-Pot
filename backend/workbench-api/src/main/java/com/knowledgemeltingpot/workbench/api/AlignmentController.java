@@ -4,11 +4,15 @@ import com.knowledgemeltingpot.workbench.api.http.RequestIdFilter;
 import com.knowledgemeltingpot.workbench.api.security.CurrentUser;
 import com.knowledgemeltingpot.workbench.application.service.AlignmentJobCommand;
 import com.knowledgemeltingpot.workbench.application.service.AlignmentService;
+import com.knowledgemeltingpot.workbench.application.service.AlignmentProposalView;
+import com.knowledgemeltingpot.workbench.application.service.KnowledgePatch;
+import com.knowledgemeltingpot.workbench.application.service.DocumentService;
 import com.knowledgemeltingpot.workbench.application.service.JobSubmission;
 import com.knowledgemeltingpot.workbench.domain.AlignmentAction;
 import com.knowledgemeltingpot.workbench.domain.AlignmentProposal;
 import com.knowledgemeltingpot.workbench.domain.AlignmentProposalStatus;
 import com.knowledgemeltingpot.workbench.domain.DocumentRevision;
+import com.knowledgemeltingpot.workbench.domain.KnowledgeIr;
 import com.knowledgemeltingpot.workbench.domain.Job;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
@@ -32,10 +36,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1")
 public class AlignmentController {
     private final AlignmentService alignmentService;
+    private final DocumentService documentService;
     private final CurrentUser currentUser;
 
-    public AlignmentController(AlignmentService alignmentService, CurrentUser currentUser) {
+    public AlignmentController(AlignmentService alignmentService, DocumentService documentService,
+            CurrentUser currentUser) {
         this.alignmentService = alignmentService;
+        this.documentService = documentService;
         this.currentUser = currentUser;
     }
 
@@ -58,17 +65,24 @@ public class AlignmentController {
     }
 
     @PostMapping("/alignment-proposals/{proposalId}/adopt")
-    public ResponseEntity<DocumentRevision> adopt(@PathVariable UUID proposalId,
+    public ResponseEntity<DocumentController.KnowledgeDocumentResponse> adopt(@PathVariable UUID proposalId,
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             Authentication authentication) {
         DocumentRevision revision = alignmentService.adopt(proposalId, ifMatch, currentUser.id(authentication),
                 RequestIdFilter.currentTraceId());
-        return ResponseEntity.ok().eTag(revision.etag()).body(revision);
+        return ResponseEntity.ok().eTag(revision.etag())
+                .body(DocumentController.KnowledgeDocumentResponse.from(
+                        documentService.getView(revision.documentId())));
     }
 
     @GetMapping("/alignment-proposals/{proposalId}")
     public AlignmentProposalResponse get(@PathVariable UUID proposalId) {
         return AlignmentProposalResponse.from(alignmentService.get(proposalId));
+    }
+
+    @GetMapping("/knowledge-documents/{documentId}/alignment-proposals")
+    public List<AlignmentProposalResponse> list(@PathVariable UUID documentId) {
+        return alignmentService.list(documentId).stream().map(AlignmentProposalResponse::from).toList();
     }
 
     public record StartAlignmentRequest(
@@ -87,20 +101,21 @@ public class AlignmentController {
             String baseEtag,
             AlignmentAction action,
             AlignmentProposalStatus status,
-            String structuredPatchJson,
+            KnowledgePatch structuredPatch,
             String reason,
-            String sourceRefsJson,
-            String regulatoryMaterialIdsJson,
+            List<KnowledgeIr.SourceRef> sourceRefs,
+            List<UUID> regulatoryMaterialIds,
             UUID createdBy,
             Instant createdAt,
             UUID adoptedRevisionId,
             UUID adoptedBy,
             Instant adoptedAt) {
 
-        static AlignmentProposalResponse from(AlignmentProposal proposal) {
+        static AlignmentProposalResponse from(AlignmentProposalView view) {
+            AlignmentProposal proposal = view.proposal();
             return new AlignmentProposalResponse(proposal.id(), proposal.documentId(), proposal.baseRevisionId(),
-                    proposal.baseEtag(), proposal.action(), proposal.status(), proposal.structuredPatchJson(),
-                    proposal.reason(), proposal.sourceRefsJson(), proposal.regulatoryMaterialIdsJson(),
+                    proposal.baseEtag(), proposal.action(), proposal.status(), view.patch(),
+                    proposal.reason(), view.sourceRefs(), view.regulatoryMaterialIds(),
                     proposal.createdBy(), proposal.createdAt(), proposal.adoptedRevisionId(), proposal.adoptedBy(),
                     proposal.adoptedAt());
         }

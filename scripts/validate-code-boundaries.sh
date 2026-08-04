@@ -26,11 +26,23 @@ if rg -n '^[[:space:]]*import[[:space:]]+(static[[:space:]]+)?software\.amazon\.
   exit 1
 fi
 
-if rg -n '^[[:space:]]*import[[:space:]]+(static[[:space:]]+)?(org\.apache\.tika\.|org\.apache\.pdfbox\.|org\.apache\.poi\.)' \
+if rg -n '^[[:space:]]*import[[:space:]]+(static[[:space:]]+)?(org\.apache\.tika\.|org\.apache\.pdfbox\.)' \
   "$repo_root/backend" \
   --glob '*.java' \
   --glob '!**/workbench-content-adapter/**' >/dev/null; then
-  echo "Tika/PDFBox/POI imports escaped the content adapter module." >&2
+  echo "Tika/PDFBox imports escaped the content adapter module." >&2
+  exit 1
+fi
+
+# POI is additionally used by the Worker asset renderer: RULE_CATALOG assets
+# generate XLSX files (cells are escaped against formula injection). Parsing of
+# untrusted OOXML input stays exclusively inside the content adapter.
+if rg -n '^[[:space:]]*import[[:space:]]+(static[[:space:]]+)?org\.apache\.poi\.' \
+  "$repo_root/backend" \
+  --glob '*.java' \
+  --glob '!**/workbench-content-adapter/**' \
+  --glob '!**/workbench-worker/src/main/java/com/knowledgemeltingpot/workbench/worker/asset/AssetContentFactory.java' >/dev/null; then
+  echo "POI imports escaped the content adapter and the worker asset renderer." >&2
   exit 1
 fi
 

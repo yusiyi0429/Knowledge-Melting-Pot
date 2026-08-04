@@ -40,6 +40,19 @@ public final class WorkerJobContext {
                 "traceId", "job-" + jobId));
     }
 
+    /**
+     * Emits a stable diagnostic event without advancing job progress. Used to
+     * surface conditions such as an unconfigured embedding provider that must
+     * not be mistaken for success.
+     */
+    public void diagnostic(int percentage, String stage, String messageCode) {
+        jobs.appendEvent(jobId, "progress", Map.of(
+                "percent", percentage,
+                "stage", stage,
+                "messageCode", messageCode,
+                "traceId", "job-" + jobId));
+    }
+
     public boolean cancellationRequested() {
         return leases.cancellationRequested(jobId);
     }

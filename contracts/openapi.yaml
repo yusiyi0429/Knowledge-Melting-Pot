@@ -158,6 +158,40 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+  /users/{userId}/password-reset:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Reset a user's password and require a first-login change
+      description: >-
+        ADMIN only. The new password is write-only and is never logged. The account must change its
+        password at the next login and all of its sessions are revoked. An administrator cannot reset
+        their own password here and must use the change-password flow instead.
+      operationId: resetUserPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetUserPasswordRequest'
+      responses:
+        '204':
+          description: Password reset; the account must change it at next login and its sessions are revoked.
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
   /scenes:
     get:
       summary: List scenes visible in the shared workspace
@@ -303,6 +337,42 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+  /materials:
+    get:
+      summary: List materials bound to a round and sub-scene for the workbench
+      description: >-
+        Returns safe workbench rows for every material status, including PENDING_UPLOAD, UPLOADED, SCANNING,
+        FAILED and INACTIVE. Object keys, hashes, object-storage credentials, and presigned URLs are never
+        included; the round must belong to the requested sub-scene.
+      operationId: listMaterials
+      parameters:
+        - name: roundId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: subSceneId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Safe workbench material rows with their current binding.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MaterialListItem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
   /materials/upload-intents:
     post:
       summary: Declare a quarantined material upload and report upload capability
@@ -413,6 +483,42 @@ paths:
         '202':
           $ref: '#/components/responses/AcceptedJob'
         '400':
+          $ref: '#/components/responses/Problem'
+  /subscenes/{subSceneId}/assets:
+    parameters:
+      - $ref: '#/components/parameters/SubSceneId'
+    get:
+      summary: List the latest asset for each type of a sub-scene
+      operationId: listAssets
+      responses:
+        '200':
+          description: Latest assets; BLOCKED means the generation prerequisite is missing.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Asset'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /assets/{assetId}/download:
+    parameters:
+      - name: assetId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Redirect to a short-lived presigned download URL for an immutable asset bundle
+      description: Only READY assets can be downloaded; the redirect URL expires in minutes and never exposes object-storage credentials.
+      operationId: downloadAsset
+      responses:
+        '302':
+          description: Redirect to a short-lived presigned URL.
+        '200':
+          description: Resource body after following the redirect (the immutable asset bundle).
+        '404':
           $ref: '#/components/responses/Problem'
   /subscenes/{subSceneId}/asset-generation-jobs:
     post:
@@ -578,6 +684,22 @@ paths:
           $ref: '#/components/responses/Problem'
         '412':
           $ref: '#/components/responses/Problem'
+  /knowledge-documents/{documentId}/alignment-proposals:
+    get:
+      summary: List immutable alignment proposals for a knowledge document
+      operationId: listAlignmentProposals
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Proposals ordered newest first, including typed diff and adoption state.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlignmentProposal' }
+        '404':
+          $ref: '#/components/responses/Problem'
   /alignment-proposals/{proposalId}:
     get:
       summary: Get an immutable alignment proposal
@@ -644,6 +766,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/ReleaseValidation'
         '412':
+          $ref: '#/components/responses/Problem'
+  /scenes/{sceneId}/releases/latest:
+    parameters:
+      - $ref: '#/components/parameters/SceneId'
+    get:
+      summary: Get the latest published release of a scene (the current baseline)
+      description: Used to seed expectedBaseReleaseId for cumulative releases; 404 when the scene has no published release yet.
+      operationId: getLatestRelease
+      responses:
+        '200':
+          description: The latest published release metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '404':
           $ref: '#/components/responses/Problem'
   /scenes/{sceneId}/releases:
     post:
@@ -866,6 +1004,153 @@ paths:
                 $ref: '#/components/schemas/ModelConfigVersion'
         '404':
           $ref: '#/components/responses/Problem'
+  /skills:
+    get:
+      summary: List skills (templates and instances) with their latest immutable version
+      operationId: listSkills
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SkillKind'
+        - name: sceneId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Skills with their latest version; manifests are safe resource-only metadata.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Skill'
+        '401':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Create a global TEMPLATE skill with its first immutable version
+      description: ADMIN only. The manifest is validated as resource-only JSON metadata and is never executed.
+      operationId: createSkill
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSkillRequest'
+      responses:
+        '201':
+          description: Created template with its first version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /skills/{skillId}:
+    parameters:
+      - name: skillId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Get a skill with its immutable version history
+      operationId: getSkill
+      responses:
+        '200':
+          description: Skill detail and versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillDetail'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /skills/{skillId}/instances:
+    parameters:
+      - name: skillId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Fork a scene INSTANCE from a TEMPLATE (OPERATOR/ADMIN)
+      description: The instance inherits the template name and its latest version.
+      operationId: forkSkillInstance
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInstanceRequest'
+      responses:
+        '201':
+          description: Created scene instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /skills/{skillId}/versions:
+    parameters:
+      - name: skillId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Append a new immutable version to an INSTANCE skill (OPERATOR/ADMIN)
+      operationId: createSkillVersion
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVersionRequest'
+      responses:
+        '201':
+          description: Appended immutable version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillVersion'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
   /audit-events:
     get:
       summary: List redacted audit events
@@ -1056,6 +1341,16 @@ components:
           items:
             type: string
             enum: [OPERATOR, PUBLISHER, ADMIN]
+    ResetUserPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [newPassword]
+      properties:
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+          writeOnly: true
     User:
       type: object
       additionalProperties: false
@@ -1214,11 +1509,61 @@ components:
           enum:
             - material.upload.object-storage-not-configured
             - material.upload.multipart-presigned
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PresignedPartMetadata'
+          description: >-
+            Ordered part metadata for browsers to PUT directly to object storage. Only present when
+            uploadMode is MULTIPART_PRESIGNED; headers exclude the browser-managed Host header.
+        partSize:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+        partCount:
+          type: [integer, 'null']
+          minimum: 1
         presignedUrls:
           type: array
           items:
             type: string
             format: uri
+    PresignedPartMetadata:
+      type: object
+      additionalProperties: false
+      required: [partNumber, url]
+      properties:
+        partNumber: { type: integer, minimum: 1 }
+        url: { type: string, format: uri }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+    MaterialListItem:
+      type: object
+      additionalProperties: false
+      required: [id, fileName, format, mediaType, sizeBytes, status, createdAt, updatedAt, binding]
+      properties:
+        id: { type: string, format: uuid }
+        fileName: { type: string }
+        format: { type: string, enum: [PDF, DOCX, XLSX, TXT] }
+        mediaType: { type: string }
+        sizeBytes: { type: integer, format: int64, minimum: 1, maximum: 209715200 }
+        status: { $ref: '#/components/schemas/MaterialStatus' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        binding: { $ref: '#/components/schemas/MaterialBinding' }
+    MaterialBinding:
+      type: object
+      additionalProperties: false
+      required: [id, roundId, subSceneId, partition, shareScope, regulatorySource, active]
+      properties:
+        id: { type: string, format: uuid }
+        roundId: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        partition: { $ref: '#/components/schemas/MaterialPartition' }
+        shareScope: { $ref: '#/components/schemas/MaterialShareScope' }
+        regulatorySource: { type: boolean }
+        active: { type: boolean }
     CompleteUploadRequest:
       type: object
       additionalProperties: false
@@ -1274,9 +1619,109 @@ components:
         roundId: { type: string, format: uuid }
         modelConfigVersionId: { type: string, format: uuid }
         skillVersionId: { type: string, format: uuid }
+    SkillKind:
+      type: string
+      enum: [TEMPLATE, INSTANCE]
+    CreateSkillRequest:
+      type: object
+      additionalProperties: false
+      required: [name, manifest, packageHash]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        manifest:
+          type: string
+          description: >-
+            Safe resource-only JSON metadata (resources/prompt/schema/files).
+            Must declare executionMode RESOURCE_ONLY; scripts, binaries, commands,
+            and secrets are rejected and the manifest is never executed.
+        packageHash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+    CreateInstanceRequest:
+      type: object
+      additionalProperties: false
+      required: [sceneId]
+      properties:
+        sceneId: { type: string, format: uuid }
+    CreateVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [manifest, packageHash]
+      properties:
+        manifest:
+          type: string
+          description: Safe resource-only JSON metadata; never executed.
+        packageHash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+    Skill:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, description, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/SkillKind' }
+        description: { type: string }
+        sceneId: { type: [string, 'null'], format: uuid }
+        sourceSkillId: { type: [string, 'null'], format: uuid }
+        sourceSkillVersionId: { type: [string, 'null'], format: uuid }
+        version: { type: [integer, 'null'], minimum: 1 }
+        packageHash: { type: [string, 'null'] }
+        manifestJson: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+    SkillVersion:
+      type: object
+      additionalProperties: false
+      required: [id, skillId, version, manifestJson, packageHash, createdBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        skillId: { type: string, format: uuid }
+        version: { type: integer, minimum: 1 }
+        manifestJson: { type: string }
+        packageHash: { type: string }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    SkillDetail:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, description, createdAt, versions]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/SkillKind' }
+        description: { type: string }
+        sceneId: { type: [string, 'null'], format: uuid }
+        sourceSkillId: { type: [string, 'null'], format: uuid }
+        sourceSkillVersionId: { type: [string, 'null'], format: uuid }
+        createdAt: { type: string, format: date-time }
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillVersion'
     AssetType:
       type: string
       enum: [RULE_CATALOG, DECISION_FLOW, SKILL_PACKAGE, QA_PAIRS, EVALUATION_SET]
+    AssetStatus:
+      type: string
+      enum: [PENDING, GENERATING, READY, FAILED, SUPERSEDED, BLOCKED]
+    Asset:
+      type: object
+      additionalProperties: false
+      required: [id, subSceneId, type, version, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/AssetType' }
+        version: { type: integer, minimum: 1 }
+        status: { $ref: '#/components/schemas/AssetStatus' }
+        documentRevisionId: { type: [string, 'null'], format: uuid }
+        objectKey: { type: string }
+        checksum: { type: string }
+        failureReason: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     GenerateAssetsRequest:
       type: object
       additionalProperties: false
@@ -1307,8 +1752,8 @@ components:
     AlignmentProposal:
       type: object
       additionalProperties: false
-      required: [id, documentId, baseRevisionId, baseEtag, action, status, structuredPatchJson,
-        reason, sourceRefsJson, regulatoryMaterialIdsJson, createdBy, createdAt]
+      required: [id, documentId, baseRevisionId, baseEtag, action, status, structuredPatch,
+        reason, sourceRefs, regulatoryMaterialIds, createdBy, createdAt]
       properties:
         id: { type: string, format: uuid }
         documentId: { type: string, format: uuid }
@@ -1316,17 +1761,40 @@ components:
         baseEtag: { type: string }
         action: { type: string, enum: [CONSISTENCY, REGULATORY, GAP_ANALYSIS, REWRITE] }
         status: { type: string, enum: [READY, ADOPTED] }
-        structuredPatchJson:
-          type: string
-          description: Canonical JSON limited to the replaceMarkdown operation in this milestone.
+        structuredPatch: { $ref: '#/components/schemas/KnowledgePatch' }
         reason: { type: string }
-        sourceRefsJson: { type: string }
-        regulatoryMaterialIdsJson: { type: string }
+        sourceRefs:
+          type: array
+          items: { $ref: '#/components/schemas/SourceRef' }
+        regulatoryMaterialIds:
+          type: array
+          items: { type: string, format: uuid }
         createdBy: { type: string, format: uuid }
         createdAt: { type: string, format: date-time }
         adoptedRevisionId: { type: [string, 'null'], format: uuid }
         adoptedBy: { type: [string, 'null'], format: uuid }
         adoptedAt: { type: [string, 'null'], format: date-time }
+    KnowledgePatch:
+      type: object
+      additionalProperties: false
+      required: [operation, replacement, diff]
+      properties:
+        operation: { type: string, const: replaceKnowledgeIr }
+        replacement: { $ref: '#/components/schemas/KnowledgeIr' }
+        diff: { $ref: '#/components/schemas/KnowledgeDiff' }
+    KnowledgeDiff:
+      type: object
+      additionalProperties: false
+      required: [addedRuleIds, removedRuleIds, changedRuleIds, addedFlowIds, removedFlowIds,
+        changedFlowIds, sourceRefDelta]
+      properties:
+        addedRuleIds: { type: array, items: { type: string } }
+        removedRuleIds: { type: array, items: { type: string } }
+        changedRuleIds: { type: array, items: { type: string } }
+        addedFlowIds: { type: array, items: { type: string } }
+        removedFlowIds: { type: array, items: { type: string } }
+        changedFlowIds: { type: array, items: { type: string } }
+        sourceRefDelta: { type: integer }
     AcceptedJob:
       type: object
       required: [jobId, status, statusUrl, eventsUrl]
@@ -1366,18 +1834,142 @@ components:
         jobId: { type: string, format: uuid }
         stage: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
         percent: { type: integer, minimum: 0, maximum: 100 }
-        messageCode: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
+        messageCode:
+          type: string
+          pattern: '^[A-Za-z0-9._:-]{1,128}$'
+          description: >
+            Stable machine-readable code. Ingest jobs emit the diagnostic
+            EMBEDDING_PROVIDER_UNCONFIGURED when no real embedding provider is
+            configured; vectors are never fabricated and no EMBEDDINGS_COMMITTED
+            stage is reported in that state.
         traceId: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
         timestamp: { type: string, format: date-time }
         message: { type: string }
     SourceRef:
       type: object
-      required: [materialId, materialSha256, locator]
+      additionalProperties: false
+      description: >
+        A source reference derived exclusively from the persisted chunk locator
+        and material identity. Client input never contributes to these fields.
+      required: [code, materialId, materialSha256, chunkId, locatorType, excerptHash]
       properties:
+        code: { type: string, pattern: '^SRC-[A-Za-z0-9_-]{1,100}$' }
         materialId: { type: string, format: uuid }
         materialSha256: { type: string }
-        locator: { type: string, description: "Page, paragraph, sheet/row or line locator." }
-        excerptHash: { type: [string, 'null'] }
+        chunkId: { type: string, format: uuid }
+        locatorType:
+          type: string
+          enum: [PDF_PAGE_PARAGRAPH, DOCX_PARAGRAPH, DOCX_TABLE_CELL, XLSX_RANGE, TXT_LINES]
+        page: { type: [integer, 'null'], minimum: 1 }
+        paragraph: { type: [integer, 'null'], minimum: 0 }
+        table: { type: [integer, 'null'], minimum: 0 }
+        sheet: { type: [string, 'null'] }
+        rowStart: { type: [integer, 'null'], minimum: 0 }
+        rowEnd: { type: [integer, 'null'], minimum: 0 }
+        colStart: { type: [integer, 'null'], minimum: 0 }
+        colEnd: { type: [integer, 'null'], minimum: 0 }
+        lineStart: { type: [integer, 'null'], minimum: 0 }
+        lineEnd: { type: [integer, 'null'], minimum: 0 }
+        excerptHash: { type: string }
+    KnowledgeIr:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, metadata, rules, flows, conflicts, gaps, sourceRefs]
+      properties:
+        schemaVersion: { type: string, const: knowledge-ir/v1 }
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [documentId, subSceneId, roundId, inputHash]
+          properties:
+            documentId: { type: string, format: uuid }
+            subSceneId: { type: string, format: uuid }
+            roundId: { type: string, format: uuid }
+            inputHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        rules:
+          type: array
+          items: { $ref: '#/components/schemas/KnowledgeRule' }
+        flows:
+          type: array
+          items: { $ref: '#/components/schemas/KnowledgeFlow' }
+        conflicts:
+          type: array
+          items: { $ref: '#/components/schemas/KnowledgeConflict' }
+        gaps:
+          type: array
+          items: { $ref: '#/components/schemas/KnowledgeGap' }
+        sourceRefs:
+          type: array
+          items: { $ref: '#/components/schemas/SourceRef' }
+    KnowledgeRule:
+      type: object
+      additionalProperties: false
+      required: [id, title, condition, conclusion, priority, exceptions, sourceRefs]
+      properties:
+        id: { type: string, pattern: '^R-[a-f0-9]{16}$' }
+        title: { type: string }
+        condition: { type: string }
+        conclusion: { type: string }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
+        exceptions: { type: array, items: { type: string } }
+        sourceRefs:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, pattern: '^SRC-[A-Za-z0-9_-]{1,100}$' }
+    KnowledgeFlow:
+      type: object
+      additionalProperties: false
+      required: [id, name, nodes, edges]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/KnowledgeFlowNode' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/KnowledgeFlowEdge' }
+    KnowledgeFlowNode:
+      type: object
+      additionalProperties: false
+      required: [id, label, critical, sourceRefs]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        critical: { type: boolean }
+        sourceRefs:
+          type: array
+          uniqueItems: true
+          items: { type: string, pattern: '^SRC-[A-Za-z0-9_-]{1,100}$' }
+    KnowledgeFlowEdge:
+      type: object
+      additionalProperties: false
+      required: [id, source, target, label]
+      properties:
+        id: { type: string }
+        source: { type: string }
+        target: { type: string }
+        label: { type: string }
+    KnowledgeConflict:
+      type: object
+      additionalProperties: false
+      required: [id, description, sourceRefs]
+      properties:
+        id: { type: string }
+        description: { type: string }
+        sourceRefs:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, pattern: '^SRC-[A-Za-z0-9_-]{1,100}$' }
+    KnowledgeGap:
+      type: object
+      additionalProperties: false
+      required: [id, description]
+      properties:
+        id: { type: string }
+        description: { type: string }
     KnowledgeDocument:
       type: object
       required: [id, subSceneId, revisionId, revisionNumber, contentMd, contentHash, sourceRefs, etag]
@@ -1615,18 +2207,17 @@ components:
         testedAt: { type: string, format: date-time }
     AuditEvent:
       type: object
-      required: [id, actorType, action, entityType, entityId, occurredAt, traceId]
+      additionalProperties: false
+      required: [id, actorId, action, targetType, targetId, detailsJson, occurredAt]
       properties:
         id: { type: string, format: uuid }
-        actorType: { type: string, enum: [USER, SYSTEM, AGENT] }
-        actorDisplayName: { type: [string, 'null'] }
+        actorId: { type: string, format: uuid }
         action: { type: string }
-        entityType: { type: string }
-        entityId: { type: string }
-        beforeHash: { type: [string, 'null'] }
-        afterHash: { type: [string, 'null'] }
+        targetType: { type: string }
+        targetId: { type: string, format: uuid }
+        detailsJson: { type: string, description: "Server-redacted audit details; clients render only allowlisted fields." }
+        traceId: { type: [string, 'null'] }
         occurredAt: { type: string, format: date-time }
-        traceId: { type: string }
     Problem:
       type: object
       required: [type, title, status, code, traceId]

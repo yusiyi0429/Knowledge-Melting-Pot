@@ -2,6 +2,7 @@ package com.knowledgemeltingpot.workbench.content;
 
 import com.knowledgemeltingpot.workbench.application.port.MaterialParseException;
 import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
+import com.knowledgemeltingpot.workbench.domain.ChunkLocator;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -41,9 +42,9 @@ class TxtMaterialParser {
             segmentText.append(lines[i]);
             if ((i + 1) % linesPerSegment == 0 || i == lines.length - 1) {
                 segments.add(new MaterialParserPort.ParsedSegment(segments.size(),
-                        new MaterialParserPort.SegmentLocator(
-                                MaterialParserPort.LocatorType.TXT_LINES,
-                                null, null, null, null, null, null, null, segmentStart, i),
+                        new ChunkLocator(
+                                ChunkLocator.LocatorType.TXT_LINES,
+                                null, null, null, null, null, null, null, null, segmentStart, i),
                         segmentText.toString()));
                 segmentText = new StringBuilder();
                 segmentStart = i + 1;

@@ -2,6 +2,7 @@ package com.knowledgemeltingpot.workbench.api;
 
 import com.knowledgemeltingpot.workbench.api.http.RequestIdFilter;
 import com.knowledgemeltingpot.workbench.api.security.CurrentUser;
+import com.knowledgemeltingpot.workbench.application.error.NotFoundException;
 import com.knowledgemeltingpot.workbench.application.service.ReleaseCommand;
 import com.knowledgemeltingpot.workbench.application.service.ReleaseService;
 import com.knowledgemeltingpot.workbench.application.service.ReleaseValidation;
@@ -58,6 +59,12 @@ public class ReleaseController {
     @GetMapping("/releases/{releaseId}")
     public ReleaseResponse get(@PathVariable UUID releaseId) {
         return ReleaseResponse.from(releaseService.get(releaseId));
+    }
+
+    @GetMapping("/scenes/{sceneId}/releases/latest")
+    public ReleaseResponse latest(@PathVariable UUID sceneId) {
+        return ReleaseResponse.from(releaseService.findLatestPublished(sceneId)
+                .orElseThrow(() -> new NotFoundException("scene has no published release")));
     }
 
     @GetMapping(value = "/releases/{releaseId}/manifest", produces = MediaType.APPLICATION_JSON_VALUE)
