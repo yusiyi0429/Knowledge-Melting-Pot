@@ -8,6 +8,9 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify({ unreadCount: 0, items: [] }),
     });
   });
+  await page.route("**/api/v1/embedding-profiles", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+  });
 });
 
 test("walks through the auditable extraction and partial-release prototype", async ({ page }) => {
@@ -100,6 +103,14 @@ test("walks through the auditable extraction and partial-release prototype", asy
     }
     await route.continue();
   });
+  await page.route("**/api/v1/retrieval/chunks?*", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{
+      chunkId: "chunk-risk", materialId: "material-source", sourceRefCode: "SRC-RISK-001",
+      locatorType: "TXT_LINES", page: null, paragraph: null, table: null, sheet: null,
+      rowStart: null, rowEnd: null, colStart: null, colEnd: null, lineStart: 12, lineEnd: 14,
+      excerpt: "逾期超过三十天时进入重点复核。", score: 0.94,
+    }]) });
+  });
 
   await page.route("**/api/v1/auth/csrf", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "e2e-csrf" }) });
@@ -130,6 +141,10 @@ test("walks through the auditable extraction and partial-release prototype", asy
   await expect(page.getByRole("textbox", { name: "知识文档 Markdown" })).toBeVisible();
   await expect(page.getByText("v1", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("演示萃取 Job")).toHaveCount(0);
+  await page.getByLabel("中文语义检索").fill("逾期风险如何判断");
+  await page.getByRole("button", { name: "检索 Chunk" }).click();
+  await expect(page.getByText("逾期超过三十天时进入重点复核。")).toBeVisible();
+  await expect(page.getByText("Holdout 物理隔离")).toBeVisible();
   expect(consoleErrors).toEqual([]);
 });
 
@@ -369,7 +384,9 @@ test("manages model connections against the real API contract", async ({ page })
   }];
   const mutations: unknown[] = [];
   const versionBodies: unknown[] = [];
+  const embeddingBodies: unknown[] = [];
   const deletes: string[] = [];
+  let embeddingProfiles: Record<string, unknown>[] = [];
 
   await page.route("**/api/v1/auth/csrf", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(csrf) });
@@ -437,6 +454,22 @@ test("manages model connections against the real API contract", async ({ page })
     versions = [created, ...versions];
     await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(created) });
   });
+  await page.unroute("**/api/v1/embedding-profiles");
+  await page.route("**/api/v1/embedding-profiles", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(embeddingProfiles) });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    expect(route.request().headers()["x-xsrf-token"]).toBe(csrf.token);
+    embeddingBodies.push(body);
+    const created = {
+      id: "embedding-profile-1", provider: "DASHSCOPE", active: true,
+      createdAt: "2026-08-04T10:00:00Z", ...body,
+    };
+    embeddingProfiles = [created];
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(created) });
+  });
 
   await page.goto("/models");
 
@@ -472,7 +505,7 @@ test("manages model connections against the real API contract", async ({ page })
   await page.getByLabel("名称").fill("DashScope 主网关（改名）");
   await page.getByRole("button", { name: "保存修改" }).click();
   await expect(page.getByText("连接已更新，列表已刷新。")).toBeVisible();
-  await expect(page.getByText("DashScope 主网关（改名）")).toBeVisible();
+  await expect(page.locator("article").getByText("DashScope 主网关（改名）", { exact: true })).toBeVisible();
 
   // Connection test renders the Provider connectivity result.
   const renamedRow = page.locator("article").filter({ hasText: "DashScope 主网关（改名）" });
@@ -488,13 +521,26 @@ test("manages model connections against the real API contract", async ({ page })
   await renamedRow.getByRole("button", { name: "配置版本" }).click();
   await expect(page.getByText("v1", { exact: true })).toBeVisible();
   await expect(page.getByText("qwen-max", { exact: true }).first()).toBeVisible();
-  await page.getByLabel("Model ID").fill("qwen-max");
+  await page.getByLabel("Model ID", { exact: true }).fill("qwen-max");
   await page.getByLabel("Temperature").fill("0.2");
   await page.getByLabel("Max Output Tokens").fill("8192");
   await page.getByRole("button", { name: "追加版本" }).click();
   await expect(page.getByText("已追加新的不可变配置版本。")).toBeVisible();
   await expect(page.getByText("v2", { exact: true })).toBeVisible();
   expect(versionBodies).toEqual([{ modelId: "qwen-max", temperature: 0.2, maxOutputTokens: 8192 }]);
+
+  // A verified connection can activate an immutable vector profile and expose its HNSW lineage.
+  await page.getByLabel("已验证连接").selectOption(modelConnectionFixture.id);
+  await page.getByLabel("Embedding Model ID", { exact: true }).fill("text-embedding-v4");
+  await page.getByLabel("向量维度").fill("1024");
+  await page.getByLabel("版本标识").fill("2026-08");
+  await page.getByRole("button", { name: "创建并激活" }).click();
+  await expect(page.getByText("Embedding 配置已激活")).toBeVisible();
+  await expect(page.getByText("当前索引")).toBeVisible();
+  expect(embeddingBodies).toEqual([{
+    modelConnectionId: modelConnectionFixture.id, modelId: "text-embedding-v4", dimension: 1024,
+    profileVersion: "2026-08", normalization: "L2", distanceFunction: "COSINE",
+  }]);
 
   // Delete requires an explicit second confirmation before the soft delete fires.
   const createdRow = page.locator("article").filter({ hasText: "企业模型网关" });
@@ -504,7 +550,7 @@ test("manages model connections against the real API contract", async ({ page })
   await expect(page.getByText("连接已删除（软删除，历史配置版本保留可追溯）。")).toBeVisible();
   expect(deletes).toHaveLength(1);
   await expect(page.getByText("企业模型网关")).toHaveCount(0);
-  await expect(page.getByText("DashScope 主网关（改名）")).toBeVisible();
+  await expect(page.locator("article").getByText("DashScope 主网关（改名）", { exact: true })).toBeVisible();
 });
 
 test("models page renders permission problems and field validation errors", async ({ page }) => {

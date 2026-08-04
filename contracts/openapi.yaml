@@ -1080,6 +1080,86 @@ paths:
                 $ref: '#/components/schemas/EvaluationDetail'
         '404':
           $ref: '#/components/responses/Problem'
+  /embedding-profiles:
+    get:
+      summary: List immutable embedding profile versions
+      description: ADMIN only. The active version is marked without mutating historical profiles.
+      operationId: listEmbeddingProfiles
+      responses:
+        '200':
+          description: Embedding profiles ordered newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EmbeddingProfile'
+        '403':
+          $ref: '#/components/responses/Problem'
+    post:
+      summary: Create and activate an immutable embedding profile
+      description: >-
+        ADMIN only. The model connection must be enabled, credentialed and connectivity-verified.
+        Activation creates a dimension-specific partial HNSW index without changing historical profiles.
+      operationId: createEmbeddingProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEmbeddingProfileRequest'
+      responses:
+        '201':
+          description: Created and activated embedding profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingProfile'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /retrieval/chunks:
+    get:
+      summary: Retrieve trusted knowledge chunks using the active dense embedding profile
+      description: >-
+        Searches only SOURCE and LABELED_TRAIN material visible to the selected round and sub-scene.
+        LABELED_HOLDOUT content is physically excluded from retrieval.
+      operationId: retrieveKnowledgeChunks
+      parameters:
+        - name: roundId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: subSceneId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2, maxLength: 1000 }
+        - name: topK
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+      responses:
+        '200':
+          description: Ranked trusted chunks and source locators.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DenseRetrievalResult'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /model-connections:
     get:
       summary: List model connections without exposing credentials
@@ -2976,6 +3056,67 @@ components:
           type: string
           description: Stable, non-sensitive outcome code. Provider payloads and raw errors are never returned.
         testedAt: { type: string, format: date-time }
+    CreateEmbeddingProfileRequest:
+      type: object
+      additionalProperties: false
+      required: [modelConnectionId, modelId, dimension, profileVersion, normalization, distanceFunction]
+      properties:
+        modelConnectionId: { type: string, format: uuid }
+        modelId: { type: string, minLength: 1, maxLength: 200 }
+        dimension:
+          type: integer
+          minimum: 1
+          maximum: 2000
+          description: HNSW uses pgvector vector indexes, which support at most 2000 dimensions.
+        profileVersion: { type: string, minLength: 1, maxLength: 100 }
+        normalization: { type: string, enum: [NONE, L2] }
+        distanceFunction: { type: string, enum: [COSINE, L2] }
+    EmbeddingProfile:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - modelConnectionId
+        - provider
+        - modelId
+        - dimension
+        - profileVersion
+        - normalization
+        - distanceFunction
+        - active
+        - createdAt
+      properties:
+        id: { type: string, format: uuid }
+        modelConnectionId: { type: string, format: uuid }
+        provider: { $ref: '#/components/schemas/ModelProvider' }
+        modelId: { type: string }
+        dimension: { type: integer, minimum: 1, maximum: 2000 }
+        profileVersion: { type: string }
+        normalization: { type: string, enum: [NONE, L2] }
+        distanceFunction: { type: string, enum: [COSINE, L2] }
+        active: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    DenseRetrievalResult:
+      type: object
+      additionalProperties: false
+      required: [chunkId, materialId, sourceRefCode, locatorType, excerpt, score]
+      properties:
+        chunkId: { type: string, format: uuid }
+        materialId: { type: string, format: uuid }
+        sourceRefCode: { type: string, minLength: 1 }
+        locatorType: { type: string, enum: [PDF_PAGE_PARAGRAPH, DOCX_PARAGRAPH, DOCX_TABLE_CELL, XLSX_RANGE, TXT_LINES] }
+        page: { type: [integer, 'null'], minimum: 1 }
+        paragraph: { type: [integer, 'null'], minimum: 0 }
+        table: { type: [integer, 'null'], minimum: 0 }
+        sheet: { type: [string, 'null'] }
+        rowStart: { type: [integer, 'null'], minimum: 0 }
+        rowEnd: { type: [integer, 'null'], minimum: 0 }
+        colStart: { type: [integer, 'null'], minimum: 0 }
+        colEnd: { type: [integer, 'null'], minimum: 0 }
+        lineStart: { type: [integer, 'null'], minimum: 0 }
+        lineEnd: { type: [integer, 'null'], minimum: 0 }
+        excerpt: { type: string, maxLength: 501 }
+        score: { type: number, minimum: -1, maximum: 1 }
     AuditEvent:
       type: object
       additionalProperties: false

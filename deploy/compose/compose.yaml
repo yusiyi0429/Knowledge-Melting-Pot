@@ -131,6 +131,8 @@ services:
       KMP_MODEL_TEST_CONNECT_TIMEOUT: ${KMP_MODEL_TEST_CONNECT_TIMEOUT:-PT5S}
       KMP_MODEL_TEST_REQUEST_TIMEOUT: ${KMP_MODEL_TEST_REQUEST_TIMEOUT:-PT10S}
       KMP_MODEL_TEST_MAX_REDIRECTS: ${KMP_MODEL_TEST_MAX_REDIRECTS:-2}
+      KMP_EMBEDDING_REQUEST_TIMEOUT: ${KMP_EMBEDDING_REQUEST_TIMEOUT:-PT1M}
+      KMP_EMBEDDING_MAX_RESPONSE_BYTES: ${KMP_EMBEDDING_MAX_RESPONSE_BYTES:-16777216}
     secrets:
       - source: kmp_bootstrap_admin_password
         target: workbench.bootstrap-admin.password
@@ -172,6 +174,8 @@ services:
       KMP_AGENT_TEST_STUB_ENABLED: ${KMP_AGENT_TEST_STUB_ENABLED:-false}
       KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
       KMP_ALLOWED_MODEL_HOSTS: ${KMP_ALLOWED_MODEL_HOSTS:-api.openai.com,dashscope.aliyuncs.com}
+      KMP_EMBEDDING_REQUEST_TIMEOUT: ${KMP_EMBEDDING_REQUEST_TIMEOUT:-PT1M}
+      KMP_EMBEDDING_MAX_RESPONSE_BYTES: ${KMP_EMBEDDING_MAX_RESPONSE_BYTES:-16777216}
     secrets: [kmp_model_master_key]
     depends_on:
       api: { condition: service_healthy }

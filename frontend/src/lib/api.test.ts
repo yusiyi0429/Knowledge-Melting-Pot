@@ -7,6 +7,7 @@ import {
   ApiError,
   changePassword,
   completeUpload,
+  createEmbeddingProfile,
   createExtractionRound,
   createModelConfigVersion,
   createModelConnection,
@@ -24,6 +25,7 @@ import {
   getReleaseManifest,
   getScene,
   listDocumentRevisions,
+  listEmbeddingProfiles,
   listExtractionRounds,
   listEvaluationRuns,
   listModelConfigVersions,
@@ -53,6 +55,7 @@ import {
   updateUser,
   validateRelease,
   previewConfigurationImport,
+  retrieveKnowledgeChunks,
 } from "./api";
 import type { CreateUploadIntentDraft } from "./api";
 
@@ -307,6 +310,79 @@ describe("model connection API client", () => {
       message: "One or more fields are invalid",
       errors: [{ field: "baseUrl", message: "must match the host whitelist" }],
     });
+  });
+});
+
+describe("embedding and dense retrieval API client", () => {
+  const csrfBody = { headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "csrf-token" };
+  const profile = {
+    id: "10000000-0000-4000-8000-000000000001",
+    modelConnectionId: "20000000-0000-4000-8000-000000000001",
+    provider: "DASHSCOPE",
+    modelId: "text-embedding-v4",
+    dimension: 1024,
+    profileVersion: "2026-08",
+    normalization: "L2",
+    distanceFunction: "COSINE",
+    active: true,
+    createdAt: "2026-08-04T08:00:00Z",
+  };
+
+  it("lists immutable profiles and creates a new active version with CSRF", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json([profile]))
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json(profile, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const profiles = await listEmbeddingProfiles();
+    expect(profiles[0]).toMatchObject({ active: true, dimension: 1024 });
+    const created = await createEmbeddingProfile({
+      modelConnectionId: profile.modelConnectionId,
+      modelId: profile.modelId,
+      dimension: profile.dimension,
+      profileVersion: profile.profileVersion,
+      normalization: "L2",
+      distanceFunction: "COSINE",
+    });
+
+    expect(created.id).toBe(profile.id);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/v1/embedding-profiles");
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-XSRF-TOKEN": "csrf-token" },
+    });
+  });
+
+  it("encodes the Chinese query and retrieval scope without a mutation token", async () => {
+    const result = {
+      chunkId: "30000000-0000-4000-8000-000000000001",
+      materialId: "40000000-0000-4000-8000-000000000001",
+      sourceRefCode: "SRC-risk-0",
+      locatorType: "TXT_LINES",
+      page: null,
+      paragraph: null,
+      table: null,
+      sheet: null,
+      rowStart: null,
+      rowEnd: null,
+      colStart: null,
+      colEnd: null,
+      lineStart: 1,
+      lineEnd: 3,
+      excerpt: "逾期超过三十天时进入重点复核。",
+      score: 0.91,
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json([result]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await retrieveKnowledgeChunks("round-1", "sub-1", "逾期 风险", 8);
+
+    expect(results[0]).toMatchObject({ sourceRefCode: "SRC-risk-0", score: 0.91 });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/v1/retrieval/chunks?roundId=round-1&subSceneId=sub-1&q=%E9%80%BE%E6%9C%9F+%E9%A3%8E%E9%99%A9&topK=8",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ credentials: "same-origin", cache: "no-store" });
   });
 });
 

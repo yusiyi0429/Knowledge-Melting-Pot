@@ -92,7 +92,7 @@ docker inspect "$api_id" --format '{{json .HostConfig.PortBindings}}'
 docker inspect "$worker_id" --format '{{json .HostConfig.PortBindings}}'
 ```
 
-预期迁移输出为 `1:t` 到 `13:t`，会话表计数为 `2`，管理员检查为 `true:true`，两个端口检查均为 `{}`。V12 应存在七条最新角色模板，V13 应存在六张探索/通知相关表。Worker 必须稳定运行且不得创建 SDK 默认的 `/app/logs`。
+预期迁移输出为 `1:t` 到 `16:t`，会话表计数为 `2`，管理员检查为 `true:true`，两个端口检查均为 `{}`。V12 应存在七条最新角色模板，V13 应存在六张探索/通知相关表，V15/V16 应分别存在模型连通验证和 Embedding 激活指针结构。Worker 必须稳定运行且不得创建 SDK 默认的 `/app/logs`。
 
 再通过 Web 反向代理执行真实 CSRF + Session 登录，并确认两类 Cookie 都带 `Secure`。现代浏览器和 curl 将 localhost 视为安全来源；其他纯 HTTP 调试地址必须显式设置 `KMP_SECURE_COOKIES=false`，不得把该覆盖用于正式部署。请求正文经 stdin 传递，不把密码拼进 curl 参数；Cookie jar 使用临时文件：
 
@@ -156,6 +156,16 @@ unset KMP_BOOTSTRAP_ADMIN_USERNAME KMP_BOOTSTRAP_ADMIN_PASSWORD KMP_MODEL_MASTER
 ## 最近一次本机证据
 
 2026-08-04 使用一次性 Secret 和独立项目 `kmp-runtime-check` 重新构建三张镜像并执行仓库脚本通过：输出 `RUNTIME_OK readiness=UP`，Flyway V1–V13 全部成功、存在七条角色模板及六张探索/通知相关表，初始管理员唯一且要求首次改密，XSRF 与 Session Cookie 均带 `Secure`，真实 CSRF 登录返回 204 并写入一条 Spring Session；Worker 稳定运行、Agent Runtime 与 Worker Flyway 均关闭、没有 `/app/logs`，API/Worker 无宿主端口，日志未命中三项一次性 Secret。验证结束后输出 `CLEANUP_OK containers=0 volumes=0`。
+
+## Embedding 与中文稠密检索
+
+`scripts/verify-vector-retrieval.sh` 使用临时 pgvector 数据库和本地 API 进程，不依赖外部模型密钥，验证 V1–V16 迁移、不可变 Embedding Profile 激活、Profile 专属 HNSW 索引、中文排序和 Holdout 物理隔离：
+
+```bash
+scripts/verify-vector-retrieval.sh
+```
+
+2026-08-04 本机输出 `VECTOR_RETRIEVAL_OK migrations=16 profile_active=true dimension=3 hnsw_index=true ranking=SRC-KNOWLEDGE-RISK,SRC-KNOWLEDGE-ROUTINE holdout_excluded=true`。该验收通过合成向量检查索引、排序和分区约束；Provider 真实 Embedding 响应由单独的连接测试和需要用户密钥的 E2E 门禁承担。
 
 ## KnowledgeIR、萃取与对齐闭环
 

@@ -313,6 +313,12 @@ class IngestMaterialJobHandlerTest {
                                 NOW))
                         .toList();
             }
+
+            @Override
+            public List<Float> embedQuery(String query,
+                    com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion profile) {
+                return List.of(1f, 2f, 3f);
+            }
         };
         handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, materialRepository, blobRepository,
                 checkpointRepository, chunkRepository, embeddingProfileRepository, chunkEmbeddingRepository,
@@ -320,7 +326,7 @@ class IngestMaterialJobHandlerTest {
         LeasedJob leasedJob = leasedJob(1, 1);
         Material material = material(MaterialStatus.UPLOADED);
         com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion profile =
-                new com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion(UUID.randomUUID(),
+                new com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion(UUID.randomUUID(), UUID.randomUUID(),
                         "fake-test", "test-model", 3, "1", "L2", "COSINE", true, NOW);
         when(materialRepository.findById(MATERIAL_ID)).thenReturn(Optional.of(material));
         when(embeddingProfileRepository.findActive()).thenReturn(Optional.of(profile));
@@ -359,6 +365,12 @@ class IngestMaterialJobHandlerTest {
                                 NOW))
                         .toList();
             }
+
+            @Override
+            public List<Float> embedQuery(String query,
+                    com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion profile) {
+                return List.of(1f, 2f, 3f);
+            }
         };
         handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, materialRepository, blobRepository,
                 checkpointRepository, chunkRepository, embeddingProfileRepository, chunkEmbeddingRepository,
@@ -366,7 +378,7 @@ class IngestMaterialJobHandlerTest {
         LeasedJob leasedJob = leasedJob(1, 1);
         Material material = material(MaterialStatus.UPLOADED);
         com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion profile =
-                new com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion(UUID.randomUUID(),
+                new com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion(UUID.randomUUID(), UUID.randomUUID(),
                         "fake-test", "test-model", 3, "1", "L2", "COSINE", true, NOW);
         when(materialRepository.findById(MATERIAL_ID)).thenReturn(Optional.of(material));
         when(embeddingProfileRepository.findActive()).thenReturn(Optional.of(profile));
@@ -399,13 +411,19 @@ class IngestMaterialJobHandlerTest {
                 return List.of(new com.knowledgemeltingpot.workbench.domain.ChunkEmbedding(UUID.randomUUID(),
                         profile.id(), chunks.getFirst().contentHash(), profile.dimension(), List.of(1f, 2f, 3f), NOW));
             }
+
+            @Override
+            public List<Float> embedQuery(String query,
+                    com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion profile) {
+                return List.of(1f, 2f, 3f);
+            }
         };
         handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, materialRepository, blobRepository,
                 checkpointRepository, chunkRepository, embeddingProfileRepository, chunkEmbeddingRepository,
                 List.of(invalidPort), objectMapper, clock);
         Material material = material(MaterialStatus.UPLOADED);
         com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion profile =
-                new com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion(UUID.randomUUID(),
+                new com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion(UUID.randomUUID(), UUID.randomUUID(),
                         "fake-test", "test-model", 3, "1", "L2", "COSINE", true, NOW);
         when(materialRepository.findById(MATERIAL_ID)).thenReturn(Optional.of(material));
         when(embeddingProfileRepository.findActive()).thenReturn(Optional.of(profile));

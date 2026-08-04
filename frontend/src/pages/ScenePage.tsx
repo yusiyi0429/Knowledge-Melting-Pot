@@ -26,6 +26,7 @@ import {
   listSubSceneAssets,
   listSubScenes,
   listWorkbenchMaterials,
+  retrieveKnowledgeChunks,
   saveKnowledgeDocument,
   startAlignment,
   startExtraction,
@@ -41,6 +42,7 @@ import type {
   AssetType,
   AuthenticatedUser,
   DocumentRevisionSummary,
+  DenseRetrievalResult,
   EvaluationAccepted,
   EvaluationDetail,
   EvaluationRun,
@@ -105,6 +107,16 @@ function formatSourceLocator(ref: SourceRefEntry): string {
     case "DOCX_TABLE_CELL": return `DOCX 表 ${ref.table ?? "?"} · 行 ${ref.rowStart ?? "?"} · 列 ${ref.colStart ?? "?"}`;
     case "XLSX_RANGE": return `XLSX ${ref.sheet ?? "?"} · 行 ${ref.rowStart ?? "?"}-${ref.rowEnd ?? "?"}`;
     case "TXT_LINES": return `TXT 行 ${ref.lineStart ?? "?"}-${ref.lineEnd ?? "?"}`;
+  }
+}
+
+function formatRetrievalLocator(result: DenseRetrievalResult): string {
+  switch (result.locatorType) {
+    case "PDF_PAGE_PARAGRAPH": return `PDF 第 ${result.page ?? "?"} 页 · 段落 ${result.paragraph ?? "?"}`;
+    case "DOCX_PARAGRAPH": return `DOCX 段落 ${result.paragraph ?? "?"}`;
+    case "DOCX_TABLE_CELL": return `DOCX 表 ${result.table ?? "?"} · 行 ${result.rowStart ?? "?"} · 列 ${result.colStart ?? "?"}`;
+    case "XLSX_RANGE": return `XLSX ${result.sheet ?? "?"} · 行 ${result.rowStart ?? "?"}-${result.rowEnd ?? "?"}`;
+    case "TXT_LINES": return `TXT 行 ${result.lineStart ?? "?"}-${result.lineEnd ?? "?"}`;
   }
 }
 
@@ -209,6 +221,10 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [docMessage, setDocMessage] = useState<string | null>(null);
   const [docSaveError, setDocSaveError] = useState<string | null>(null);
   const [docConflict, setDocConflict] = useState(false);
+  const [semanticQuery, setSemanticQuery] = useState("");
+  const [semanticResults, setSemanticResults] = useState<DenseRetrievalResult[] | null>(null);
+  const [semanticSearching, setSemanticSearching] = useState(false);
+  const [semanticError, setSemanticError] = useState<string | null>(null);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigVersion[]>([]);
   const [skillVersions, setSkillVersions] = useState<SkillVersion[]>([]);
   const [selectedModelConfigId, setSelectedModelConfigId] = useState("");
@@ -341,6 +357,28 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   );
 
   const currentRoundId = latestRound?.id ?? null;
+
+  useEffect(() => {
+    setSemanticResults(null);
+    setSemanticError(null);
+    setSemanticQuery("");
+  }, [selectedSubsceneId, currentRoundId]);
+
+  const runSemanticSearch = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const query = semanticQuery.trim();
+    if (!selectedSubsceneId || !currentRoundId || semanticSearching || query.length < 2) return;
+    setSemanticSearching(true);
+    setSemanticError(null);
+    try {
+      setSemanticResults(await retrieveKnowledgeChunks(currentRoundId, selectedSubsceneId, query, 8));
+    } catch (reason) {
+      setSemanticResults(null);
+      setSemanticError(reason instanceof ApiError ? reason.message : "语义检索失败，请稍后重试。");
+    } finally {
+      setSemanticSearching(false);
+    }
+  };
 
   const loadMaterials = useCallback(async () => {
     if (!selectedSubsceneId || !currentRoundId) {
@@ -1165,6 +1203,33 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
 
                   <aside className="source-panel">
                     <div className="source-panel__head"><span><Glyph name="link" size={15} />来源定位</span><b>{doc?.sourceRefs.length ?? 0}</b></div>
+                    <div className="semantic-search">
+                      <form onSubmit={(event) => void runSemanticSearch(event)}>
+                        <label className="field">
+                          <span>中文语义检索</span>
+                          <input value={semanticQuery} maxLength={1000} placeholder="输入业务问题，检索当前轮次可信素材"
+                            onChange={(event) => setSemanticQuery(event.currentTarget.value)} />
+                        </label>
+                        <Button type="submit" className="button--quiet button--small"
+                          disabled={semanticSearching || semanticQuery.trim().length < 2 || !currentRoundId}>
+                          {semanticSearching ? "检索中…" : "检索 Chunk"}
+                        </Button>
+                      </form>
+                      <small>SOURCE / LABELED_TRAIN · Holdout 物理隔离</small>
+                      {semanticError ? <div className="form-error" role="alert">{semanticError}</div> : null}
+                      {semanticResults?.length === 0 ? <p>当前范围没有可用向量结果。</p> : null}
+                      {semanticResults && semanticResults.length > 0 ? (
+                        <div className="semantic-results" aria-live="polite">
+                          {semanticResults.map((result) => (
+                            <article key={result.chunkId}>
+                              <header><code>[{result.sourceRefCode}]</code><b>{(result.score * 100).toFixed(1)}</b></header>
+                              <span>{formatRetrievalLocator(result)}</span>
+                              <p>{result.excerpt}</p>
+                            </article>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                     {!doc || doc.sourceRefs.length === 0 ? (
                       <div className="subscene-empty">当前 Revision 尚无已验证来源；请先运行萃取。</div>
                     ) : (

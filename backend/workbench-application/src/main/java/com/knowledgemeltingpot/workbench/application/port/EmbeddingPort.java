@@ -21,4 +21,7 @@ public interface EmbeddingPort {
      * or persist chunk content.
      */
     List<ChunkEmbedding> embed(List<MaterialChunk> chunks, EmbeddingProfileVersion profile);
+
+    /** Computes the query-side vector using the same immutable profile. */
+    List<Float> embedQuery(String query, EmbeddingProfileVersion profile);
 }

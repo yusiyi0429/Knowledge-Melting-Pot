@@ -2,6 +2,8 @@ package com.knowledgemeltingpot.workbench.application.port;
 
 import com.knowledgemeltingpot.workbench.domain.ChunkEmbedding;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Persistence port for chunk embeddings. Writes are idempotent (unique key
@@ -17,4 +19,6 @@ public interface ChunkEmbeddingRepository {
      * embedding row present after the call.
      */
     int writeAll(List<ChunkEmbedding> embeddings);
+
+    Set<UUID> findPresentChunkIds(UUID profileVersionId, List<UUID> chunkIds);
 }

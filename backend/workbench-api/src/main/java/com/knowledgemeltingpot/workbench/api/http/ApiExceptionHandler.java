@@ -1,6 +1,7 @@
 package com.knowledgemeltingpot.workbench.api.http;
 
 import com.knowledgemeltingpot.workbench.application.error.ConflictException;
+import com.knowledgemeltingpot.workbench.application.error.EmbeddingProviderException;
 import com.knowledgemeltingpot.workbench.application.error.NotFoundException;
 import com.knowledgemeltingpot.workbench.application.error.PayloadTooLargeException;
 import com.knowledgemeltingpot.workbench.application.error.PreconditionFailedException;
@@ -63,6 +64,15 @@ public class ApiExceptionHandler {
     ResponseEntity<ProblemDetail> unprocessable(UnprocessableEntityException exception) {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Document validation failed", exception.getMessage(),
                 exception.code());
+    }
+
+    @ExceptionHandler(EmbeddingProviderException.class)
+    ResponseEntity<ProblemDetail> embeddingProvider(EmbeddingProviderException exception) {
+        ProblemDetail problem = problem(HttpStatus.SERVICE_UNAVAILABLE, "Embedding Provider unavailable",
+                "The configured embedding Provider could not complete the request",
+                exception.code().toLowerCase(java.util.Locale.ROOT).replace('_', '-')).getBody();
+        problem.setProperty("retryable", exception.retryable());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

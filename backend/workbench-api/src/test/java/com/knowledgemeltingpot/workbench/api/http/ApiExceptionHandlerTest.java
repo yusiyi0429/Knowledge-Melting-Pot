@@ -3,6 +3,7 @@ package com.knowledgemeltingpot.workbench.api.http;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.knowledgemeltingpot.workbench.application.error.PayloadTooLargeException;
+import com.knowledgemeltingpot.workbench.application.error.EmbeddingProviderException;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -34,5 +35,18 @@ class ApiExceptionHandlerTest {
 
         assertThat(response.getStatusCode().value()).isEqualTo(413);
         assertThat(response.getBody().getProperties()).containsEntry("code", "material-too-large");
+    }
+
+    @Test
+    void embeddingFailureUsesStableSanitizedProblemWithoutProviderPayload() {
+        var response = new ApiExceptionHandler().embeddingProvider(
+                new EmbeddingProviderException("EMBEDDING_RATE_LIMITED", true));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(503);
+        assertThat(response.getBody().getDetail())
+                .isEqualTo("The configured embedding Provider could not complete the request");
+        assertThat(response.getBody().getProperties())
+                .containsEntry("code", "embedding-rate-limited")
+                .containsEntry("retryable", true);
     }
 }

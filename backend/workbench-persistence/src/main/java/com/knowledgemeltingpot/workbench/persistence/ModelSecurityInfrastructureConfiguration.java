@@ -1,12 +1,17 @@
 package com.knowledgemeltingpot.workbench.persistence;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.knowledgemeltingpot.workbench.application.port.CredentialCipher;
+import com.knowledgemeltingpot.workbench.application.port.EmbeddingPort;
+import com.knowledgemeltingpot.workbench.application.port.ModelConnectionRepository;
 import com.knowledgemeltingpot.workbench.application.port.ModelConnectionTestPort;
 import com.knowledgemeltingpot.workbench.application.security.ModelEndpointPolicy;
+import com.knowledgemeltingpot.workbench.domain.ModelProvider;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -46,23 +51,51 @@ public class ModelSecurityInfrastructureConfiguration {
     }
 
     @Bean
-    ModelConnectionTestPort modelConnectionTestPort(CredentialCipher credentialCipher,
-            ModelEndpointPolicy endpointPolicy,
+    HttpClient modelProviderHttpClient(
             @Value("${workbench.model-security.test-connect-timeout:${KMP_MODEL_TEST_CONNECT_TIMEOUT:PT5S}}")
-            Duration connectTimeout,
+            Duration connectTimeout) {
+        if (connectTimeout.isZero() || connectTimeout.isNegative()) {
+            throw new IllegalArgumentException("model Provider connect timeout must be positive");
+        }
+        return HttpClient.newBuilder()
+                .connectTimeout(connectTimeout)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+    }
+
+    @Bean
+    ModelConnectionTestPort modelConnectionTestPort(CredentialCipher credentialCipher,
+            ModelEndpointPolicy endpointPolicy, HttpClient modelProviderHttpClient,
             @Value("${workbench.model-security.test-request-timeout:${KMP_MODEL_TEST_REQUEST_TIMEOUT:PT10S}}")
             Duration requestTimeout,
             @Value("${workbench.model-security.test-max-redirects:${KMP_MODEL_TEST_MAX_REDIRECTS:2}}")
             int maxRedirects) {
-        if (connectTimeout.isZero() || connectTimeout.isNegative()) {
-            throw new IllegalArgumentException("model connection test connect timeout must be positive");
-        }
-        HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(connectTimeout)
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
-        return new HttpModelConnectionTestPort(credentialCipher, endpointPolicy, client,
+        return new HttpModelConnectionTestPort(credentialCipher, endpointPolicy, modelProviderHttpClient,
                 requestTimeout, maxRedirects);
+    }
+
+    @Bean
+    EmbeddingPort openAiCompatibleEmbeddingPort(ModelConnectionRepository models,
+            CredentialCipher credentialCipher, ModelEndpointPolicy endpointPolicy,
+            HttpClient modelProviderHttpClient, ObjectMapper objectMapper, Clock clock,
+            @Value("${workbench.embedding.request-timeout:${KMP_EMBEDDING_REQUEST_TIMEOUT:PT1M}}")
+            Duration requestTimeout,
+            @Value("${workbench.embedding.max-response-bytes:${KMP_EMBEDDING_MAX_RESPONSE_BYTES:16777216}}")
+            int maxResponseBytes) {
+        return new HttpEmbeddingPort(ModelProvider.OPENAI_COMPATIBLE, models, credentialCipher,
+                endpointPolicy, modelProviderHttpClient, objectMapper, clock, requestTimeout, maxResponseBytes);
+    }
+
+    @Bean
+    EmbeddingPort dashScopeEmbeddingPort(ModelConnectionRepository models,
+            CredentialCipher credentialCipher, ModelEndpointPolicy endpointPolicy,
+            HttpClient modelProviderHttpClient, ObjectMapper objectMapper, Clock clock,
+            @Value("${workbench.embedding.request-timeout:${KMP_EMBEDDING_REQUEST_TIMEOUT:PT1M}}")
+            Duration requestTimeout,
+            @Value("${workbench.embedding.max-response-bytes:${KMP_EMBEDDING_MAX_RESPONSE_BYTES:16777216}}")
+            int maxResponseBytes) {
+        return new HttpEmbeddingPort(ModelProvider.DASHSCOPE, models, credentialCipher,
+                endpointPolicy, modelProviderHttpClient, objectMapper, clock, requestTimeout, maxResponseBytes);
     }
 
     private static List<InetAddress> resolveAll(String host) throws UnknownHostException {

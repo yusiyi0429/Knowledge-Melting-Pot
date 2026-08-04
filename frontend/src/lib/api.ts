@@ -177,6 +177,43 @@ export interface ModelConnectionTestResult {
   testedAt: string;
 }
 
+export interface EmbeddingProfile {
+  id: string;
+  modelConnectionId: string;
+  provider: ModelProvider;
+  modelId: string;
+  dimension: number;
+  profileVersion: string;
+  normalization: "NONE" | "L2";
+  distanceFunction: "COSINE" | "L2";
+  active: boolean;
+  createdAt: string;
+}
+
+export type EmbeddingProfileDraft = Pick<
+  EmbeddingProfile,
+  "modelConnectionId" | "modelId" | "dimension" | "profileVersion" | "normalization" | "distanceFunction"
+>;
+
+export interface DenseRetrievalResult {
+  chunkId: string;
+  materialId: string;
+  sourceRefCode: string;
+  locatorType: "PDF_PAGE_PARAGRAPH" | "DOCX_PARAGRAPH" | "DOCX_TABLE_CELL" | "XLSX_RANGE" | "TXT_LINES";
+  page: number | null;
+  paragraph: number | null;
+  table: number | null;
+  sheet: string | null;
+  rowStart: number | null;
+  rowEnd: number | null;
+  colStart: number | null;
+  colEnd: number | null;
+  lineStart: number | null;
+  lineEnd: number | null;
+  excerpt: string;
+  score: number;
+}
+
 async function getJson<T>(path: string, fallback: string): Promise<T> {
   const response = await requireSuccess(
     await fetch(path, { credentials: "same-origin", cache: "no-store" }),
@@ -245,6 +282,28 @@ export async function createModelConfigVersion(
     "创建配置版本失败。",
   );
   return (await response.json()) as ModelConfigVersion;
+}
+
+export async function listEmbeddingProfiles(): Promise<EmbeddingProfile[]> {
+  return getJson("/api/v1/embedding-profiles", "无法读取 Embedding 配置版本。");
+}
+
+export async function createEmbeddingProfile(draft: EmbeddingProfileDraft): Promise<EmbeddingProfile> {
+  const response = await requireSuccess(
+    await postWithCsrf("/api/v1/embedding-profiles", draft),
+    "创建 Embedding 配置失败。",
+  );
+  return (await response.json()) as EmbeddingProfile;
+}
+
+export async function retrieveKnowledgeChunks(
+  roundId: string,
+  subSceneId: string,
+  query: string,
+  topK = 10,
+): Promise<DenseRetrievalResult[]> {
+  const params = new URLSearchParams({ roundId, subSceneId, q: query, topK: String(topK) });
+  return getJson(`/api/v1/retrieval/chunks?${params}`, "语义检索失败。");
 }
 
 export type AgentRole =

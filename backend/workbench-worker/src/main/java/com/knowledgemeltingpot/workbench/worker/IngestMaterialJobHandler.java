@@ -1,6 +1,7 @@
 package com.knowledgemeltingpot.workbench.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.knowledgemeltingpot.workbench.application.error.EmbeddingProviderException;
 import com.knowledgemeltingpot.workbench.application.port.ChunkEmbeddingRepository;
 import com.knowledgemeltingpot.workbench.application.port.ChunkRepository;
 import com.knowledgemeltingpot.workbench.application.port.EmbeddingPort;
@@ -242,6 +243,9 @@ public class IngestMaterialJobHandler implements JobHandler {
             checkpointRepository.completeAttempt(jobId, IngestStage.OBJECT_VERIFIED, parserName, parserVersion,
                     now);
             return JobHandlingResult.success(blob.id().toString());
+        } catch (EmbeddingProviderException exception) {
+            LOGGER.warn("Ingest job {} embedding Provider failed: {}", jobId, exception.code());
+            return fail(jobId, material.id(), IngestStage.FAILED, exception.code(), exception.retryable(), null);
         } catch (Exception exception) {
             LOGGER.error("Ingest job {} failed: {}", jobId, exception.getClass().getSimpleName());
             return fail(jobId, material.id(), IngestStage.FAILED, "INGEST_EXCEPTION", true, exception);
@@ -270,9 +274,26 @@ public class IngestMaterialJobHandler implements JobHandler {
             context.diagnostic(80, "CHUNKS_COMMITTED", "EMBEDDING_PROVIDER_UNCONFIGURED");
             return;
         }
-        List<ChunkEmbedding> embeddings = provider.orElseThrow().embed(chunks, profile.get());
-        validateEmbeddings(chunks, profile.get(), embeddings);
-        int present = chunkEmbeddingRepository.writeAll(embeddings);
+        EmbeddingProfileVersion active = profile.orElseThrow();
+        Set<UUID> presentIds = chunkEmbeddingRepository.findPresentChunkIds(active.id(),
+                chunks.stream().map(MaterialChunk::id).toList());
+        List<MaterialChunk> missing = chunks.stream()
+                .filter(chunk -> !presentIds.contains(chunk.id()))
+                .toList();
+        for (int start = 0; start < missing.size(); start += 10) {
+            List<MaterialChunk> batch = missing.subList(start, Math.min(start + 10, missing.size()));
+            List<ChunkEmbedding> embeddings = provider.orElseThrow().embed(batch, active);
+            validateEmbeddings(batch, active, embeddings);
+            int batchPresent = chunkEmbeddingRepository.writeAll(embeddings);
+            if (batchPresent < batch.size()) {
+                throw new IllegalStateException("embedding batch write incomplete: " + batchPresent + "/"
+                        + batch.size() + " present");
+            }
+            int completed = Math.min(chunks.size(), presentIds.size() + start + batch.size());
+            int percent = 80 + Math.min(5, (completed * 5) / Math.max(chunks.size(), 1));
+            context.progress(percent, "EMBEDDINGS_WRITING");
+        }
+        int present = presentIds.size() + missing.size();
         if (present < chunks.size()) {
             throw new IllegalStateException("embedding write incomplete: " + present + "/" + chunks.size()
                     + " present");

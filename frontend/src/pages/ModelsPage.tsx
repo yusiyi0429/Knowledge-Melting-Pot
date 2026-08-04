@@ -2,15 +2,19 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Button, EmptyState, Glyph, PageHeader, Status } from "../components/Ui";
 import {
   ApiError,
+  createEmbeddingProfile,
   createModelConfigVersion,
   createModelConnection,
   deleteModelConnection,
+  listEmbeddingProfiles,
   listModelConfigVersions,
   listModelConnections,
   testModelConnection,
   updateModelConnection,
 } from "../lib/api";
 import type {
+  EmbeddingProfile,
+  EmbeddingProfileDraft,
   ModelConfigVersion,
   ModelConfigVersionDraft,
   ModelConnection,
@@ -173,6 +177,9 @@ export function ModelsPage() {
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [embeddingProfiles, setEmbeddingProfiles] = useState<EmbeddingProfile[] | null>(null);
+  const [embeddingError, setEmbeddingError] = useState<string | null>(null);
+  const [embeddingSaving, setEmbeddingSaving] = useState(false);
 
   const loadConnections = useCallback(async () => {
     setLoadError(null);
@@ -187,6 +194,20 @@ export function ModelsPage() {
   useEffect(() => {
     void loadConnections();
   }, [loadConnections]);
+
+  const loadEmbeddingProfiles = useCallback(async () => {
+    setEmbeddingError(null);
+    try {
+      setEmbeddingProfiles(await listEmbeddingProfiles());
+    } catch (reason) {
+      setEmbeddingProfiles(null);
+      setEmbeddingError(reason instanceof ApiError ? reason.message : "无法读取 Embedding 配置版本。");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadEmbeddingProfiles();
+  }, [loadEmbeddingProfiles]);
 
   const openDialog = (state: ConnectionDialogState) => {
     dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -344,6 +365,45 @@ export function ModelsPage() {
     }
   };
 
+  const submitEmbeddingProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (embeddingSaving) return;
+    setEmbeddingError(null);
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const modelConnectionId = String(data.get("modelConnectionId") ?? "");
+    const modelId = String(data.get("modelId") ?? "").trim();
+    const dimension = Number(data.get("dimension"));
+    const profileVersion = String(data.get("profileVersion") ?? "").trim();
+    if (!modelConnectionId || !modelId || !profileVersion || !Number.isInteger(dimension)
+      || dimension < 1 || dimension > 2000) {
+      setEmbeddingError("请选择已验证连接，并填写 Model ID、版本标识和 1–2000 的向量维度。");
+      return;
+    }
+    const draft: EmbeddingProfileDraft = {
+      modelConnectionId,
+      modelId,
+      dimension,
+      profileVersion,
+      normalization: String(data.get("normalization")) as EmbeddingProfileDraft["normalization"],
+      distanceFunction: String(data.get("distanceFunction")) as EmbeddingProfileDraft["distanceFunction"],
+    };
+    setEmbeddingSaving(true);
+    try {
+      await createEmbeddingProfile(draft);
+      form.reset();
+      setSuccessNotice("Embedding 配置已激活，后续入库将按该不可变版本写入向量索引。");
+      await loadEmbeddingProfiles();
+    } catch (reason) {
+      setEmbeddingError(reason instanceof ApiError ? reason.message : "激活 Embedding 配置失败。");
+    } finally {
+      setEmbeddingSaving(false);
+    }
+  };
+
+  const verifiedConnections = (connections ?? []).filter((connection) => connection.enabled
+    && connection.credentialConfigured && connection.validationStatus === "CONNECTIVITY_VERIFIED");
+
   return (
     <div className="page">
       <PageHeader
@@ -473,10 +533,58 @@ export function ModelsPage() {
           })}
         </section>
       ) : null}
+      <section className="embedding-panel" aria-labelledby="embedding-title">
+        <header className="embedding-panel__head">
+          <div className="embedding-mark"><Glyph name="search" size={18} /></div>
+          <div>
+            <span>VECTOR PROFILE / ACTIVE POINTER</span>
+            <h2 id="embedding-title">Embedding 与中文稠密检索</h2>
+            <p>配置版本不可变；激活指针单独更新，并为该维度建立局部 HNSW 索引。</p>
+          </div>
+          {embeddingProfiles?.find((profile) => profile.active) ? <Status tone="success">已激活</Status> : <Status tone="warning">未配置</Status>}
+        </header>
+        {embeddingError ? <div className="form-error" role="alert">{embeddingError}</div> : null}
+        <div className="embedding-panel__body">
+          <form className="embedding-form" onSubmit={(event) => void submitEmbeddingProfile(event)} noValidate>
+            <label className="field">
+              <span>已验证连接</span>
+              <select name="modelConnectionId" defaultValue="" disabled={embeddingSaving}>
+                <option value="">请选择</option>
+                {verifiedConnections.map((connection) => (
+                  <option key={connection.id} value={connection.id}>{connection.name} · {modelProviderLabel(connection.provider)}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field"><span>Embedding Model ID</span><input name="modelId" maxLength={200} placeholder="例如 text-embedding-v4" /></label>
+            <label className="field"><span>向量维度</span><input name="dimension" type="number" min="1" max="2000" defaultValue="1024" /></label>
+            <label className="field"><span>版本标识</span><input name="profileVersion" maxLength={100} placeholder="例如 2026-08" /></label>
+            <label className="field"><span>归一化</span><select name="normalization" defaultValue="L2"><option value="L2">L2</option><option value="NONE">不处理</option></select></label>
+            <label className="field"><span>距离函数</span><select name="distanceFunction" defaultValue="COSINE"><option value="COSINE">Cosine</option><option value="L2">L2</option></select></label>
+            <Button type="submit" className="button--primary button--small" disabled={embeddingSaving || verifiedConnections.length === 0}>
+              {embeddingSaving ? "激活中…" : "创建并激活"}
+            </Button>
+            {verifiedConnections.length === 0 ? <small>先为一个已启用且已配置凭据的模型连接完成真实连通测试。</small> : null}
+          </form>
+          <div className="embedding-history" aria-label="Embedding 配置历史">
+            {embeddingProfiles === null && !embeddingError ? <div className="model-loading" aria-busy="true">正在读取向量配置…</div> : null}
+            {embeddingProfiles?.length === 0 ? <EmptyState title="还没有向量配置" detail="完成模型连接测试后，在左侧创建第一个不可变 Embedding 配置。" /> : null}
+            {embeddingProfiles?.map((profile) => (
+              <article key={profile.id} className={profile.active ? "active" : ""}>
+                <span className="embedding-history__signal" />
+                <div><b>{profile.modelId}</b><code>{profile.provider} · {profile.profileVersion}</code></div>
+                <span>{profile.dimension}d</span>
+                <span>{profile.normalization} / {profile.distanceFunction}</span>
+                <time>{formatDateTime(profile.createdAt)}</time>
+                {profile.active ? <Status tone="success">当前索引</Status> : <Status tone="neutral">历史</Status>}
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
       <div className="model-footnotes">
         <div><b>SSRF 防护</b><p>Base URL 必须命中管理员白名单，并在 DNS 解析与重定向后再次校验。</p></div>
         <div><b>配置快照</b><p>发布 Manifest 记录 Provider、Model ID 和生成参数哈希，不记录 API Key。</p></div>
-        <div><b>离线校验</b><p>连接测试只验证安全配置边界，不发起网络请求，也不代表供应商真实连通。</p></div>
+        <div><b>真实连通</b><p>连接测试会发起最小只读鉴权探测；只有通过的连接才能激活 Embedding 配置。</p></div>
       </div>
       {dialog ? (
         <ConnectionDialog

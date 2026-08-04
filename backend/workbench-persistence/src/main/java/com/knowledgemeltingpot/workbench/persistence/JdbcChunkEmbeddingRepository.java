@@ -3,8 +3,10 @@ package com.knowledgemeltingpot.workbench.persistence;
 import com.knowledgemeltingpot.workbench.application.port.ChunkEmbeddingRepository;
 import com.knowledgemeltingpot.workbench.domain.ChunkEmbedding;
 import java.util.List;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -55,6 +57,23 @@ public class JdbcChunkEmbeddingRepository implements ChunkEmbeddingRepository {
                 .query(Integer.class)
                 .single();
         return present == null ? 0 : present;
+    }
+
+    @Override
+    public Set<UUID> findPresentChunkIds(UUID profileVersionId, List<UUID> chunkIds) {
+        if (chunkIds.isEmpty()) {
+            return Set.of();
+        }
+        return jdbc.sql("""
+                SELECT chunk_id FROM chunk_embedding
+                WHERE profile_version_id = :profileVersionId AND chunk_id IN (:chunkIds)
+                """)
+                .param("profileVersionId", profileVersionId)
+                .param("chunkIds", chunkIds)
+                .query(UUID.class)
+                .list()
+                .stream()
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     private String vectorText(List<Float> vector) {

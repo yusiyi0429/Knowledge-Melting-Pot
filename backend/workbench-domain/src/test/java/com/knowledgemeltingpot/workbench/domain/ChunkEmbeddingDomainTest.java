@@ -54,8 +54,8 @@ class ChunkEmbeddingDomainTest {
 
     @Test
     void embeddingProfileRejectsInvalidDimensions() {
-        assertThatThrownBy(() -> new EmbeddingProfileVersion(UUID.randomUUID(), "p", "m", 0, "1", "L2", "COSINE",
-                true, NOW))
+        assertThatThrownBy(() -> new EmbeddingProfileVersion(UUID.randomUUID(), UUID.randomUUID(),
+                "p", "m", 0, "1", "L2", "COSINE", true, NOW))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("dimension");
     }

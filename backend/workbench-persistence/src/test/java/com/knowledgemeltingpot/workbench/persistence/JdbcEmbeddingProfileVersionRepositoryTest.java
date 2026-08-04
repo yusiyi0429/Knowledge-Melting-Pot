@@ -25,18 +25,18 @@ class JdbcEmbeddingProfileVersionRepositoryTest {
         when(statement.param(anyString(), any())).thenReturn(statement);
         when(statement.update()).thenReturn(1);
         JdbcEmbeddingProfileVersionRepository repository = new JdbcEmbeddingProfileVersionRepository(jdbc);
-        EmbeddingProfileVersion profile = new EmbeddingProfileVersion(UUID.randomUUID(),
+        EmbeddingProfileVersion profile = new EmbeddingProfileVersion(UUID.randomUUID(), UUID.randomUUID(),
                 "dashscope", "text-embedding-v4", 1024, "1", "L2", "COSINE", true, NOW);
 
-        repository.insert(profile);
+        repository.insertAndActivate(profile, UUID.randomUUID(), NOW);
 
+        verify(statement).param("modelConnectionId", profile.modelConnectionId());
         verify(statement).param("provider", "dashscope");
         verify(statement).param("modelId", "text-embedding-v4");
         verify(statement).param("dimension", 1024);
         verify(statement).param("profileVersion", "1");
         verify(statement).param("normalization", "L2");
         verify(statement).param("distanceFunction", "COSINE");
-        verify(statement).param("active", true);
     }
 
     @Test

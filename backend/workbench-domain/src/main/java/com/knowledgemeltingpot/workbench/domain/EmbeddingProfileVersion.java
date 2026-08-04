@@ -10,6 +10,7 @@ import java.util.UUID;
  */
 public record EmbeddingProfileVersion(
         UUID id,
+        UUID modelConnectionId,
         String provider,
         String modelId,
         int dimension,
@@ -21,6 +22,7 @@ public record EmbeddingProfileVersion(
 
     public EmbeddingProfileVersion {
         id = DomainChecks.required(id, "id");
+        modelConnectionId = DomainChecks.required(modelConnectionId, "modelConnectionId");
         provider = DomainChecks.text(provider, "provider");
         modelId = DomainChecks.text(modelId, "modelId");
         profileVersion = DomainChecks.text(profileVersion, "profileVersion");
