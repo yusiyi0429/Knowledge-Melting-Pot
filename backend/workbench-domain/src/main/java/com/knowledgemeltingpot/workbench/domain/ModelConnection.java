@@ -33,7 +33,7 @@ public final class ModelConnection {
         this.updatedAt = DomainChecks.required(updatedAt, "updatedAt");
         this.enabled = enabled;
         this.lastValidatedAt = lastValidatedAt;
-        if (validationStatus == ModelConnectionValidationStatus.CONFIGURATION_VALIDATED && lastValidatedAt == null) {
+        if (validationStatus == ModelConnectionValidationStatus.CONNECTIVITY_VERIFIED && lastValidatedAt == null) {
             throw new IllegalArgumentException("lastValidatedAt is required for a validated connection");
         }
     }

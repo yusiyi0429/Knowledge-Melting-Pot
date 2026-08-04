@@ -3,10 +3,11 @@ package com.knowledgemeltingpot.workbench.persistence;
 import com.knowledgemeltingpot.workbench.application.port.CredentialCipher;
 import com.knowledgemeltingpot.workbench.application.port.ModelConnectionTestPort;
 import com.knowledgemeltingpot.workbench.application.security.ModelEndpointPolicy;
-import com.knowledgemeltingpot.workbench.application.service.PolicyOnlyModelConnectionTestPort;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.net.http.HttpClient;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -45,8 +46,23 @@ public class ModelSecurityInfrastructureConfiguration {
     }
 
     @Bean
-    ModelConnectionTestPort modelConnectionTestPort() {
-        return new PolicyOnlyModelConnectionTestPort();
+    ModelConnectionTestPort modelConnectionTestPort(CredentialCipher credentialCipher,
+            ModelEndpointPolicy endpointPolicy,
+            @Value("${workbench.model-security.test-connect-timeout:${KMP_MODEL_TEST_CONNECT_TIMEOUT:PT5S}}")
+            Duration connectTimeout,
+            @Value("${workbench.model-security.test-request-timeout:${KMP_MODEL_TEST_REQUEST_TIMEOUT:PT10S}}")
+            Duration requestTimeout,
+            @Value("${workbench.model-security.test-max-redirects:${KMP_MODEL_TEST_MAX_REDIRECTS:2}}")
+            int maxRedirects) {
+        if (connectTimeout.isZero() || connectTimeout.isNegative()) {
+            throw new IllegalArgumentException("model connection test connect timeout must be positive");
+        }
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(connectTimeout)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        return new HttpModelConnectionTestPort(credentialCipher, endpointPolicy, client,
+                requestTimeout, maxRedirects);
     }
 
     private static List<InetAddress> resolveAll(String host) throws UnknownHostException {

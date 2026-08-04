@@ -1,5 +1,6 @@
 package com.knowledgemeltingpot.workbench.application.service;
 
+import com.knowledgemeltingpot.workbench.application.error.ConflictException;
 import com.knowledgemeltingpot.workbench.application.error.NotFoundException;
 import com.knowledgemeltingpot.workbench.application.port.CredentialCipher;
 import com.knowledgemeltingpot.workbench.application.port.ModelConnectionRepository;
@@ -103,17 +104,17 @@ public class ModelConnectionService {
         auditService.record(actorId, "MODEL_CONNECTION_DELETED", "MODEL_CONNECTION", id, Map.of(), traceId);
     }
 
-    @Transactional
     public ModelConnectionTestResult test(UUID id, UUID actorId, String traceId) {
         ModelConnection connection = get(id);
         ValidatedModelEndpoint endpoint = endpointPolicy.validate(connection.baseUrl().toString());
         Instant testedAt = Instant.now(clock);
         ModelConnectionTestResult result = connectionTestPort.test(connection, endpoint, testedAt);
-        repository.markConfigurationValidated(id, testedAt)
-                .orElseThrow(() -> new NotFoundException("model connection not found: " + id));
-        auditService.record(actorId, "MODEL_CONNECTION_CONFIGURATION_VALIDATED", "MODEL_CONNECTION", id,
+        repository.recordConnectionTest(id, connection.updatedAt(), result.connectivityVerified(), testedAt)
+                .orElseThrow(() -> new ConflictException("model connection changed during connectivity test"));
+        auditService.record(actorId, "MODEL_CONNECTION_TESTED", "MODEL_CONNECTION", id,
                 Map.of("status", result.status(), "networkAttempted", result.networkAttempted(),
-                        "connectivityVerified", result.connectivityVerified()), traceId);
+                        "connectivityVerified", result.connectivityVerified(),
+                        "messageCode", result.messageCode()), traceId);
         return result;
     }
 

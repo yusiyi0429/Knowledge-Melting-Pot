@@ -410,17 +410,17 @@ test("manages model connections against the real API contract", async ({ page })
   await page.route("**/api/v1/model-connections/*/connection-tests", async (route) => {
     expect(route.request().headers()["x-xsrf-token"]).toBe(csrf.token);
     connections = connections.map((item) => item.id === modelConnectionFixture.id
-      ? { ...item, validationStatus: "CONFIGURATION_VALIDATED", lastValidatedAt: "2026-08-03T09:00:00Z" }
+      ? { ...item, validationStatus: "CONNECTIVITY_VERIFIED", lastValidatedAt: "2026-08-03T09:00:00Z" }
       : item);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        status: "CONFIGURATION_VALIDATED",
-        networkAttempted: false,
-        connectivityVerified: false,
+        status: "CONNECTED",
+        networkAttempted: true,
+        connectivityVerified: true,
         credentialConfigured: true,
-        messageCode: "model.configuration.validated-offline",
+        messageCode: "model.connection.verified",
         testedAt: "2026-08-03T09:00:00Z",
       }),
     });
@@ -474,14 +474,13 @@ test("manages model connections against the real API contract", async ({ page })
   await expect(page.getByText("连接已更新，列表已刷新。")).toBeVisible();
   await expect(page.getByText("DashScope 主网关（改名）")).toBeVisible();
 
-  // Connection test renders the offline semantics, not fake provider connectivity.
+  // Connection test renders the Provider connectivity result.
   const renamedRow = page.locator("article").filter({ hasText: "DashScope 主网关（改名）" });
   await renamedRow.getByRole("button", { name: "测试连接" }).click();
-  await expect(renamedRow).toContainText("配置安全校验通过");
-  await expect(renamedRow).toContainText("未发起网络请求");
-  await expect(renamedRow).toContainText("未验证供应商连通（不代表真实可达）");
-  await expect(renamedRow).toContainText("model.configuration.validated-offline");
-  await expect(renamedRow).toContainText("配置已校验");
+  await expect(renamedRow).toContainText("连通已验证");
+  await expect(renamedRow).toContainText("已发起网络请求");
+  await expect(renamedRow).toContainText("已确认 Provider 与凭据可用");
+  await expect(renamedRow).toContainText("model.connection.verified");
   await expect(page.getByText("已连接")).toHaveCount(0);
   await expect(page.getByText("演示测试通过")).toHaveCount(0);
 

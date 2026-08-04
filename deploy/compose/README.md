@@ -37,6 +37,12 @@ The sandbox publishes no host port, has no external network, receives no applica
 - Terminate TLS before Nginx and keep secure session cookies enabled.
 - Back up PostgreSQL and object storage together; a release is recoverable only when both are restored to a consistent point.
 - Restrict `KMP_ALLOWED_MODEL_HOSTS` to reviewed model gateways.
+
+Real Provider connectivity is opt-in because CI does not store model credentials. With the
+workbench running, set `KMP_PROVIDER_E2E_PASSWORD` and at least one of
+`KMP_PROVIDER_E2E_OPENAI_API_KEY` / `KMP_PROVIDER_E2E_DASHSCOPE_API_KEY`, then run
+`scripts/verify-model-providers.sh`. The script uses read-only authenticated probes, does not
+print credentials, and soft-deletes its temporary connections.
 - Configure object-store lifecycle policies for quarantine and failed uploads.
 - Do not expose PostgreSQL, MinIO, ClamAV, API or Worker ports to the host network.
 

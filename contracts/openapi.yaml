@@ -1167,17 +1167,22 @@ paths:
     parameters:
       - $ref: '#/components/parameters/ModelConnectionId'
     post:
-      summary: Revalidate model connection safety policy
-      description: ADMIN only. The default implementation performs no external network request and sends no credential.
+      summary: Test model Provider connectivity
+      description: >-
+        ADMIN only. Performs a read-only authenticated probe against the configured Provider endpoint.
+        The host allowlist, DNS result, and every redirect target are revalidated before credentials are sent;
+        raw Provider payloads and errors are never returned.
       operationId: testModelConnection
       responses:
         '200':
-          description: Offline safety validation result; this is not proof of provider connectivity.
+          description: Sanitized Provider connectivity result.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ModelConnectionTestResult'
         '400':
+          $ref: '#/components/responses/Problem'
+        '409':
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
@@ -2865,7 +2870,7 @@ components:
       enum: [OPENAI_COMPATIBLE, DASHSCOPE]
     ModelConnectionValidationStatus:
       type: string
-      enum: [UNTESTED, CONFIGURATION_VALIDATED]
+      enum: [UNTESTED, CONNECTIVITY_VERIFIED]
     ModelConnection:
       type: object
       additionalProperties: false
@@ -2963,11 +2968,13 @@ components:
         - messageCode
         - testedAt
       properties:
-        status: { type: string, const: CONFIGURATION_VALIDATED }
-        networkAttempted: { type: boolean, const: false }
-        connectivityVerified: { type: boolean, const: false }
+        status: { type: string, enum: [CONNECTED, FAILED] }
+        networkAttempted: { type: boolean }
+        connectivityVerified: { type: boolean }
         credentialConfigured: { type: boolean }
-        messageCode: { type: string, const: model.configuration.validated-offline }
+        messageCode:
+          type: string
+          description: Stable, non-sensitive outcome code. Provider payloads and raw errors are never returned.
         testedAt: { type: string, format: date-time }
     AuditEvent:
       type: object

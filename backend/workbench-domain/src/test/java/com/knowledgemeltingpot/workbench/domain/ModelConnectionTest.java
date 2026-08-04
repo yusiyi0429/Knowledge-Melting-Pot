@@ -30,7 +30,7 @@ class ModelConnectionTest {
 
         assertThatThrownBy(() -> new ModelConnection(UUID.randomUUID(), "生产网关",
                 ModelProvider.OPENAI_COMPATIBLE, URI.create("https://model.example.com/v1"), Optional.empty(),
-                true, ModelConnectionValidationStatus.CONFIGURATION_VALIDATED, null, UUID.randomUUID(), now, now))
+                true, ModelConnectionValidationStatus.CONNECTIVITY_VERIFIED, null, UUID.randomUUID(), now, now))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("lastValidatedAt");
     }

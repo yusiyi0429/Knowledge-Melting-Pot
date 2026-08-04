@@ -125,7 +125,7 @@ export async function changePassword(currentPassword: string, newPassword: strin
 
 export type ModelProvider = "OPENAI_COMPATIBLE" | "DASHSCOPE";
 
-export type ModelConnectionValidationStatus = "UNTESTED" | "CONFIGURATION_VALIDATED";
+export type ModelConnectionValidationStatus = "UNTESTED" | "CONNECTIVITY_VERIFIED";
 
 export interface ModelConnection {
   id: string;
@@ -169,7 +169,7 @@ export interface ModelConfigVersionDraft {
 }
 
 export interface ModelConnectionTestResult {
-  status: "CONFIGURATION_VALIDATED";
+  status: "CONNECTED" | "FAILED";
   networkAttempted: boolean;
   connectivityVerified: boolean;
   credentialConfigured: boolean;

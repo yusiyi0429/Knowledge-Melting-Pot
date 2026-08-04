@@ -138,7 +138,7 @@ export function releaseCanInclude(subscene: Subscene, assets: Asset[]): boolean 
 }
 
 export function toStatusTone(status: string): Tone {
-  if (["READY", "PUBLISHED", "CONNECTED", "ENABLED", "CONFIGURATION_VALIDATED"].includes(status)) return "success";
+  if (["READY", "PUBLISHED", "CONNECTED", "ENABLED", "CONNECTIVITY_VERIFIED"].includes(status)) return "success";
   if (["EXTRACTING", "GENERATING", "ALIGNING", "SCANNING"].includes(status)) return "info";
   if (["BLOCKED", "PARTIALLY_PUBLISHED", "UNTESTED"].includes(status)) return "warning";
   if (["FAILED", "DISABLED"].includes(status)) return "danger";
@@ -214,7 +214,7 @@ export function modelProviderLabel(provider: string): string {
 }
 
 export function connectionValidationLabel(status: string): string {
-  return status === "CONFIGURATION_VALIDATED" ? "配置已校验" : "未校验";
+  return status === "CONNECTIVITY_VERIFIED" ? "连通已验证" : "未验证";
 }
 
 export interface ConnectionTestSummary {
@@ -222,19 +222,14 @@ export interface ConnectionTestSummary {
   note: string;
 }
 
-/**
- * Renders the semantics returned by the connection-tests endpoint verbatim.
- * The phase-one backend never makes a network call, so the UI must not claim
- * real provider connectivity regardless of the labels used elsewhere.
- */
 export function connectionTestSummary(result: {
   networkAttempted: boolean;
   connectivityVerified: boolean;
 }): ConnectionTestSummary {
   const network = result.networkAttempted ? "已发起网络请求" : "未发起网络请求";
-  const connectivity = result.connectivityVerified ? "已确认供应商连通" : "未验证供应商连通（不代表真实可达）";
+  const connectivity = result.connectivityVerified ? "已确认 Provider 与凭据可用" : "未能验证 Provider 连通性";
   return {
-    label: result.connectivityVerified ? "连通已验证" : "配置安全校验通过",
+    label: result.connectivityVerified ? "连通已验证" : "连接测试未通过",
     note: `${network}；${connectivity}`,
   };
 }

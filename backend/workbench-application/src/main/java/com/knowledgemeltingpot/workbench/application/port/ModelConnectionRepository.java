@@ -15,7 +15,8 @@ public interface ModelConnectionRepository {
 
     List<ModelConnection> findConnections();
 
-    Optional<ModelConnection> markConfigurationValidated(UUID id, Instant validatedAt);
+    Optional<ModelConnection> recordConnectionTest(UUID id, Instant expectedUpdatedAt,
+            boolean connectivityVerified, Instant testedAt);
 
     boolean softDelete(UUID id, Instant deletedAt);
 

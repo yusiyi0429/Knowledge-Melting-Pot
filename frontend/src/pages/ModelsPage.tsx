@@ -41,8 +41,8 @@ function fieldErrorsToRecord(errors: ApiError["errors"]): Record<string, string>
 function TestResultNote({ result }: { result: ModelConnectionTestResult }) {
   const summary = connectionTestSummary(result);
   return (
-    <div className="model-inline-note" role="status">
-      <Glyph name="check" size={15} />
+    <div className={`model-inline-note${result.connectivityVerified ? "" : " model-inline-note--error"}`} role="status">
+      <Glyph name={result.connectivityVerified ? "check" : "warning"} size={15} />
       <div>
         <b>{summary.label}</b>
         <span>{summary.note} · {formatDateTime(result.testedAt)}</span>
@@ -349,7 +349,7 @@ export function ModelsPage() {
       <PageHeader
         eyebrow="平台 / 模型接入"
         title="模型连接与生成参数分开版本化"
-        description="密钥只写不读；前端只获得 credentialConfigured，不回显任何 Secret。连接测试只做离线安全策略校验，不发起网络请求。"
+        description="密钥只写不读；测试连接会向白名单内 Provider 发起只读鉴权探测，并重新校验 DNS 与重定向目标。"
         actions={
           <Button className="button--primary" onClick={() => openDialog({ mode: "create" })}>
             <Glyph name="plus" />新增模型连接

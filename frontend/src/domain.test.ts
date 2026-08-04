@@ -60,17 +60,17 @@ describe("model connection display helpers", () => {
   });
 
   it("labels the validation status returned by the API", () => {
-    expect(connectionValidationLabel("UNTESTED")).toBe("未校验");
-    expect(connectionValidationLabel("CONFIGURATION_VALIDATED")).toBe("配置已校验");
-    expect(toStatusTone("CONFIGURATION_VALIDATED")).toBe("success");
+    expect(connectionValidationLabel("UNTESTED")).toBe("未验证");
+    expect(connectionValidationLabel("CONNECTIVITY_VERIFIED")).toBe("连通已验证");
+    expect(toStatusTone("CONNECTIVITY_VERIFIED")).toBe("success");
   });
 
-  it("renders the offline test result without claiming provider connectivity", () => {
+  it("renders a failed network test without claiming provider connectivity", () => {
     const summary = connectionTestSummary({ networkAttempted: false, connectivityVerified: false });
 
-    expect(summary.label).toBe("配置安全校验通过");
+    expect(summary.label).toBe("连接测试未通过");
     expect(summary.note).toContain("未发起网络请求");
-    expect(summary.note).toContain("未验证供应商连通（不代表真实可达）");
+    expect(summary.note).toContain("未能验证 Provider 连通性");
   });
 
   it("follows the flags if a future backend does verify connectivity", () => {
@@ -78,7 +78,7 @@ describe("model connection display helpers", () => {
 
     expect(summary.label).toBe("连通已验证");
     expect(summary.note).toContain("已发起网络请求");
-    expect(summary.note).toContain("已确认供应商连通");
+    expect(summary.note).toContain("已确认 Provider 与凭据可用");
   });
 });
 

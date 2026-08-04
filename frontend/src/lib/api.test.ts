@@ -139,7 +139,7 @@ describe("model connection API client", () => {
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     enabled: true,
     credentialConfigured: true,
-    validationStatus: "CONFIGURATION_VALIDATED",
+    validationStatus: "CONNECTIVITY_VERIFIED",
     lastValidatedAt: "2026-08-03T08:00:00Z",
     createdAt: "2026-08-01T08:00:00Z",
     updatedAt: "2026-08-03T08:00:00Z",
@@ -221,15 +221,15 @@ describe("model connection API client", () => {
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
   });
 
-  it("parses the offline configuration-validation result from the connection-tests endpoint", async () => {
+  it("parses a real connectivity result from the connection-tests endpoint", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(Response.json(csrfBody))
       .mockResolvedValueOnce(Response.json({
-        status: "CONFIGURATION_VALIDATED",
-        networkAttempted: false,
-        connectivityVerified: false,
+        status: "CONNECTED",
+        networkAttempted: true,
+        connectivityVerified: true,
         credentialConfigured: true,
-        messageCode: "model.configuration.validated-offline",
+        messageCode: "model.connection.verified",
         testedAt: "2026-08-03T09:00:00Z",
       }));
     vi.stubGlobal("fetch", fetchMock);
@@ -237,10 +237,10 @@ describe("model connection API client", () => {
     const result = await testModelConnection(connection.id);
 
     expect(result).toMatchObject({
-      status: "CONFIGURATION_VALIDATED",
-      networkAttempted: false,
-      connectivityVerified: false,
-      messageCode: "model.configuration.validated-offline",
+      status: "CONNECTED",
+      networkAttempted: true,
+      connectivityVerified: true,
+      messageCode: "model.connection.verified",
     });
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/model-connections/${connection.id}/connection-tests`);
   });

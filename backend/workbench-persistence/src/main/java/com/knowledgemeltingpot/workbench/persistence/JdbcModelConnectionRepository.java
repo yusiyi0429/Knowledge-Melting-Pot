@@ -87,16 +87,20 @@ public class JdbcModelConnectionRepository implements ModelConnectionRepository 
     }
 
     @Override
-    public Optional<ModelConnection> markConfigurationValidated(UUID id, Instant validatedAt) {
+    public Optional<ModelConnection> recordConnectionTest(UUID id, Instant expectedUpdatedAt,
+            boolean connectivityVerified, Instant testedAt) {
         return jdbc.sql("""
                 UPDATE model_connection
-                SET validation_status = 'CONFIGURATION_VALIDATED', last_validated_at = :validatedAt,
-                    updated_at = :validatedAt
-                WHERE id = :id AND deleted_at IS NULL
+                SET validation_status = :validationStatus, last_validated_at = :lastValidatedAt,
+                    updated_at = :testedAt
+                WHERE id = :id AND updated_at = :expectedUpdatedAt AND deleted_at IS NULL
                 RETURNING
                 """ + CONNECTION_COLUMNS)
                 .param("id", id)
-                .param("validatedAt", JdbcTimes.toJdbc(validatedAt))
+                .param("expectedUpdatedAt", JdbcTimes.toJdbc(expectedUpdatedAt))
+                .param("validationStatus", connectivityVerified ? "CONNECTIVITY_VERIFIED" : "UNTESTED")
+                .param("lastValidatedAt", connectivityVerified ? JdbcTimes.toJdbc(testedAt) : null)
+                .param("testedAt", JdbcTimes.toJdbc(testedAt))
                 .query(JdbcModelConnectionRepository::mapConnection)
                 .optional();
     }
