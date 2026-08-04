@@ -1185,6 +1185,17 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
       body: JSON.stringify({ id: "job-9", type: "INGEST", status: "RUNNING", stage: "scan", percent: 40, attempt: 0, errorCode: null, createdAt: "2026-08-01T08:00:00Z", updatedAt: "2026-08-01T08:00:00Z" }),
     });
   });
+  await page.route("**/api/v1/jobs/job-9/events", async (route) => {
+    const event = (id: number, type: string, stage: string, percent: number, messageCode: string) =>
+      `id: ${id}\nevent: ${type}\ndata: ${JSON.stringify({ eventId: String(id), sequence: id, jobId: "job-9", type, stage, percent, messageCode, traceId: "job-job-9", timestamp: "2026-08-01T08:00:00Z", message: "Job progress updated" })}\n\n`;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: { "Cache-Control": "no-cache" },
+      body: event(1, "progress", "OCR_PROCESSING", 60, "OCR_STARTED")
+        + event(2, "completed", "COMPLETED", 100, "JOB_COMPLETED"),
+    });
+  });
   await page.route("**/api/v1/materials/upload-intents/*", async (route) => {
     await route.fulfill({ status: 204 });
   });
@@ -1211,7 +1222,7 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
 
   await page.getByRole("button", { name: "开始上传" }).click();
   await expect(page.getByText("上传完成，校验任务已排队")).toBeVisible();
-  await expect(page.getByText(/任务 job-9/)).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "上传素材" }).getByText(/任务 job-9/)).toBeVisible();
 
   expect(intentBodies).toHaveLength(1);
   expect(intentBodies[0]).toMatchObject({
@@ -1241,6 +1252,8 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
   await expect(page.getByText(/RUNNING/)).toBeVisible();
   await page.getByRole("button", { name: "完成" }).click();
   await expect(page.getByRole("dialog", { name: "上传素材" })).toHaveCount(0);
+  await expect(page.locator(".material-event-stream__head").getByText("素材已就绪", { exact: true })).toBeVisible();
+  await expect(page.getByText(/SSE 已完成/)).toBeVisible();
 
   materials = [{
     id: "mat-7", fileName: "rules.pdf", format: "PDF", mediaType: "application/pdf",

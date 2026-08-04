@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(ClamAvProperties.class)
+@EnableConfigurationProperties({ClamAvProperties.class, OcrProperties.class})
 @ConditionalOnProperty(prefix = "workbench.content", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class ContentAdapterConfiguration {
 
@@ -15,6 +15,12 @@ public class ContentAdapterConfiguration {
     @ConditionalOnProperty(prefix = "workbench.content.clamav", name = "enabled", havingValue = "true")
     ClamAvVirusScanPort clamAvVirusScanPort(ClamAvProperties properties) {
         return new ClamAvVirusScanPort(properties);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "workbench.content.ocr", name = "enabled", havingValue = "true")
+    TesseractPdfOcrPort tesseractPdfOcrPort(OcrProperties properties) {
+        return new TesseractPdfOcrPort(properties);
     }
 
     @Bean

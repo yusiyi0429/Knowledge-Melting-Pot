@@ -21,6 +21,7 @@ import com.knowledgemeltingpot.workbench.application.port.MaterialBlobRepository
 import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
+import com.knowledgemeltingpot.workbench.application.port.OcrPort;
 import com.knowledgemeltingpot.workbench.application.port.VirusScanPort;
 import com.knowledgemeltingpot.workbench.domain.ChunkLocator;
 import com.knowledgemeltingpot.workbench.domain.IngestStage;
@@ -91,7 +92,7 @@ class IngestMaterialJobHandlerTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, materialRepository, blobRepository,
+        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, Optional.empty(), materialRepository, blobRepository,
                 checkpointRepository, chunkRepository, embeddingProfileRepository, chunkEmbeddingRepository,
                 List.of(), objectMapper, clock);
         lenient().when(objectStorage.head(ObjectStoragePort.StorageZone.QUARANTINE, OBJECT_KEY))
@@ -142,6 +143,62 @@ class IngestMaterialJobHandlerTest {
                 JOB_ID, IngestStage.OBJECT_VERIFIED, "TxtParser", "1", NOW);
         verify(context).diagnostic(eq(80), eq("CHUNKS_COMMITTED"), eq("EMBEDDING_PROVIDER_UNCONFIGURED"));
         verify(context).progress(90, "OBJECT_VERIFYING");
+    }
+
+    @Test
+    void scannedPdfUsesConfiguredOcrAndEmitsBoundedProgress() throws Exception {
+        OcrPort ocr = mock(OcrPort.class);
+        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, Optional.of(ocr),
+                materialRepository, blobRepository, checkpointRepository, chunkRepository,
+                embeddingProfileRepository, chunkEmbeddingRepository, List.of(), objectMapper, clock);
+        Material pdf = new Material(MATERIAL_ID, "scan.pdf", MaterialFormat.PDF, "application/pdf", OBJECT_KEY,
+                SHA256, 11, MaterialStatus.UPLOADED, NOW, NOW);
+        when(materialRepository.findById(MATERIAL_ID)).thenReturn(Optional.of(pdf));
+        when(parser.detectMediaType(any())).thenReturn("application/pdf");
+        when(parser.parse(any(), eq(MaterialFormat.PDF)))
+                .thenReturn(new MaterialParserPort.MaterialParseResult.OcrRequired("Apache PDFBox", "2.0.31"));
+        when(ocr.recognizeScannedPdf(any(), any())).thenAnswer(invocation -> {
+            OcrPort.PageProgress progress = invocation.getArgument(1);
+            progress.completed(1, 2);
+            progress.completed(2, 2);
+            return new MaterialParserPort.MaterialParseResult.Parsed("Tesseract OCR", "tesseract 5.5.1",
+                    List.of(new MaterialParserPort.ParsedSegment(0,
+                            new ChunkLocator(ChunkLocator.LocatorType.PDF_PAGE_PARAGRAPH,
+                                    1, 0, null, null, null, null, null, null, null, null),
+                            "逾期超过三十天需要重点复核")));
+        });
+        when(objectStorage.head(eq(ObjectStoragePort.StorageZone.VERIFIED_KNOWLEDGE), any()))
+                .thenReturn(new ObjectStoragePort.ObjectHead("knowledge/verified.txt", 11, "\"etag\"", NOW));
+        when(objectStorage.open(eq(ObjectStoragePort.StorageZone.VERIFIED_KNOWLEDGE), any()))
+                .thenAnswer(ignored -> new ByteArrayInputStream(
+                        "hello world".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        WorkerJobContext context = mockContext();
+
+        JobHandlingResult result = handler.handle(leasedJob(1, 1, 11, MaterialFormat.PDF), context);
+
+        assertThat(result.succeeded()).isTrue();
+        verify(context).diagnostic(55, "OCR_PROCESSING", "OCR_STARTED");
+        verify(context).progress(65, "OCR_PROCESSING");
+        verify(context).progress(75, "OCR_PROCESSING");
+        verify(context).diagnostic(75, "OCR_COMPLETED", "OCR_COMPLETED");
+        verify(checkpointRepository).completeAttempt(
+                JOB_ID, IngestStage.OBJECT_VERIFIED, "Tesseract OCR", "tesseract 5.5.1", NOW);
+    }
+
+    @Test
+    void scannedPdfWithoutOcrCapabilityFailsExplicitly() throws Exception {
+        Material pdf = new Material(MATERIAL_ID, "scan.pdf", MaterialFormat.PDF, "application/pdf", OBJECT_KEY,
+                SHA256, 11, MaterialStatus.UPLOADED, NOW, NOW);
+        when(materialRepository.findById(MATERIAL_ID)).thenReturn(Optional.of(pdf));
+        when(parser.detectMediaType(any())).thenReturn("application/pdf");
+        when(parser.parse(any(), eq(MaterialFormat.PDF)))
+                .thenReturn(new MaterialParserPort.MaterialParseResult.OcrRequired("Apache PDFBox", "2.0.31"));
+
+        JobHandlingResult result = handler.handle(leasedJob(1, 1, 11, MaterialFormat.PDF), mockContext());
+
+        assertThat(result.succeeded()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("OCR_REQUIRED");
+        verify(chunkRepository, never()).commitAll(any(), any(), any());
     }
 
     @Test
@@ -320,7 +377,7 @@ class IngestMaterialJobHandlerTest {
                 return List.of(1f, 2f, 3f);
             }
         };
-        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, materialRepository, blobRepository,
+        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, Optional.empty(), materialRepository, blobRepository,
                 checkpointRepository, chunkRepository, embeddingProfileRepository, chunkEmbeddingRepository,
                 List.of(fakePort), objectMapper, clock);
         LeasedJob leasedJob = leasedJob(1, 1);
@@ -372,7 +429,7 @@ class IngestMaterialJobHandlerTest {
                 return List.of(1f, 2f, 3f);
             }
         };
-        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, materialRepository, blobRepository,
+        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, Optional.empty(), materialRepository, blobRepository,
                 checkpointRepository, chunkRepository, embeddingProfileRepository, chunkEmbeddingRepository,
                 List.of(fakePort), objectMapper, clock);
         LeasedJob leasedJob = leasedJob(1, 1);
@@ -418,7 +475,7 @@ class IngestMaterialJobHandlerTest {
                 return List.of(1f, 2f, 3f);
             }
         };
-        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, materialRepository, blobRepository,
+        handler = new IngestMaterialJobHandler(objectStorage, virusScan, parser, Optional.empty(), materialRepository, blobRepository,
                 checkpointRepository, chunkRepository, embeddingProfileRepository, chunkEmbeddingRepository,
                 List.of(invalidPort), objectMapper, clock);
         Material material = material(MaterialStatus.UPLOADED);
@@ -457,13 +514,18 @@ class IngestMaterialJobHandlerTest {
     }
 
     private LeasedJob leasedJob(int jobAttempt, int leasedAttempt, long expectedSizeBytes) {
+        return leasedJob(jobAttempt, leasedAttempt, expectedSizeBytes, MaterialFormat.TXT);
+    }
+
+    private LeasedJob leasedJob(int jobAttempt, int leasedAttempt, long expectedSizeBytes,
+            MaterialFormat format) {
         String payloadJson = toJson(java.util.Map.of(
                 "intentId", UUID.randomUUID().toString(),
                 "objectKey", OBJECT_KEY,
                 "clientEtag", "\"etag\"",
                 "expectedSha256", SHA256,
                 "expectedSizeBytes", expectedSizeBytes,
-                "format", "TXT"));
+                "format", format.name()));
         return new LeasedJob(
                 new Job(JOB_ID, JobType.INGEST, "MATERIAL", MATERIAL_ID, JobStatus.RUNNING, 0, jobAttempt,
                         payloadJson, "", "", "", ACTOR_ID, NOW, NOW),

@@ -24,7 +24,7 @@ export function UploadMaterialDialog({
   subSceneId?: string;
   explorationSessionId?: string;
   onClose: () => void;
-  onUploaded: () => void;
+  onUploaded: (job: MaterialJobAccepted) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const intentIdRef = useRef<string | null>(null);
@@ -184,7 +184,7 @@ export function UploadMaterialDialog({
       abortControllerRef.current = null;
       setProgress(100);
       setPhase("queued");
-      onUploaded();
+      onUploaded(accepted);
     } catch (reason) {
       if (cancellingRef.current) return;
       if (reason instanceof DOMException && reason.name === "AbortError") return;

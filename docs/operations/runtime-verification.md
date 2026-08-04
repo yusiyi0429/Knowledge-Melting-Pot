@@ -46,6 +46,7 @@ docker compose -p kmp-runtime-check \
 - API 与 Worker 将 `kmp_model_master_key` 挂载到 `/run/secrets/kmp_model_master_key`。
 - API 默认设置 `KMP_SECURE_COOKIES=true`；正式部署必须在 Web 前提供 TLS 终止。
 - Worker 明确设置 `KMP_AGENT_ENABLED=false`。
+- Worker 默认启用受限 PDF OCR，并设置页数、像素、单页超时和输出字符预算。
 - API 是唯一 Flyway 迁移所有者；Worker 设置 `SPRING_FLYWAY_ENABLED=false`，并等待 API healthy 后启动。
 - PostgreSQL、MinIO、ClamAV、API 和 Worker 均未发布宿主机端口；只有 Web 在本地验证时发布 `8088`。
 
@@ -55,6 +56,18 @@ docker compose -p kmp-runtime-check \
 docker run --rm --entrypoint /bin/sh eclipse-temurin:21-jre \
   -c 'command -v wget && java -version'
 ```
+
+Worker 镜像必须同时包含 Tesseract 引擎和简体中文语言数据；CI 也执行相同检查：
+
+```bash
+docker run --rm --entrypoint tesseract knowledge-melting-pot-worker:ocr-check --version
+docker run --rm --entrypoint tesseract knowledge-melting-pot-worker:ocr-check --list-langs \
+  | grep -Fx chi_sim
+```
+
+OCR 只由扫描型 PDF 的解析诊断触发，不接受用户命令。默认上限为 100 页、2 亿像素、单页 45 秒和 500 万输出字符，可通过 `KMP_OCR_*` 环境变量向下收紧。Worker 会将 `OCR_STARTED`、逐页 `OCR_PROCESSING` 与 `OCR_COMPLETED` 持久化为 JobEvent，浏览器通过现有 Job SSE 接收并支持断线重放。
+
+2026-08-04 本机从最终 Worker 镜像验证 `tesseract 5.5.0`，语言清单包含 `chi_sim/eng/osd`；使用与适配器相同的 `chi_sim+eng --dpi 200 --psm 6` 参数识别本机合成扫描图，输入与输出均为“风险审核”。该结果证明镜像运行时和中文数据可用，不代表复杂业务扫描件的质量基准。
 
 ## 启动与数据库证据
 

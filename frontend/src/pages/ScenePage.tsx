@@ -51,6 +51,7 @@ import type {
   Job,
   JobAccepted,
   KnowledgeDocument,
+  MaterialJobAccepted,
   MaterialListItem,
   ModelConfigVersion,
   Release,
@@ -63,6 +64,8 @@ import type {
 } from "../lib/api";
 import { ASSET_STATUS_LABELS, ASSET_TYPE_DESCRIPTIONS, ASSET_TYPE_LABELS, MATERIAL_STATUS_LABELS, partitionLabels, toStatusTone } from "../domain";
 import { UploadMaterialDialog } from "./UploadMaterialDialog";
+import { useJobEvents } from "../hooks/useJobEvents";
+import type { JobEvent } from "../domain";
 
 const steps = [
   { id: 1, title: "场景与素材", detail: "目标 · 素材 · 子场景", stage: "materials" },
@@ -85,6 +88,32 @@ const EVALUATION_STATUS_LABELS: Record<EvaluationRun["status"], string> = {
   FAILED: "失败",
   CANCELLED: "已取消",
 };
+
+const MATERIAL_EVENT_LABELS: Record<string, string> = {
+  JOB_QUEUED: "等待 Worker 领取",
+  JOB_STARTED: "开始安全校验",
+  HEAD_VERIFIED: "对象元数据已校验",
+  HASH_VERIFIED: "SHA-256 已核验",
+  MIME_VERIFIED: "文件类型已核验",
+  MALWARE_CLEAN: "恶意软件扫描通过",
+  ARCHIVE_BUDGET_VERIFIED: "处理预算已核验",
+  PARSED: "正文解析完成",
+  OCR_STARTED: "扫描件已进入 OCR",
+  OCR_COMPLETED: "OCR 文本已生成",
+  OCR_PROCESSING: "正在识别扫描页",
+  CHUNKS_COMMITTED: "来源 Chunk 已持久化",
+  EMBEDDINGS_WRITING: "正在生成稠密向量",
+  EMBEDDINGS_COMMITTED: "向量索引数据已提交",
+  OBJECT_VERIFYING: "正在复核归档对象",
+  JOB_COMPLETED: "素材已就绪",
+};
+
+function materialEventLabel(event: JobEvent): string {
+  if (event.type === "failed") return `处理失败 · ${event.messageCode}`;
+  return MATERIAL_EVENT_LABELS[event.messageCode]
+    ?? MATERIAL_EVENT_LABELS[event.stage]
+    ?? event.stage;
+}
 
 function fieldErrorsToRecord(errors: ApiError["errors"]): Record<string, string> {
   const record: Record<string, string> = {};
@@ -208,6 +237,10 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [materials, setMaterials] = useState<MaterialListItem[] | null>(null);
   const [materialsError, setMaterialsError] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [materialJob, setMaterialJob] = useState<MaterialJobAccepted | null>(null);
+  const materialStream = useJobEvents({ jobId: materialJob?.jobId ?? null });
+  const latestMaterialEvent = materialStream.events.at(-1) ?? null;
+  const refreshedMaterialEvent = useRef<string | null>(null);
 
   const [doc, setDoc] = useState<KnowledgeDocument | null>(null);
   const [documentMissing, setDocMissing] = useState(false);
@@ -393,6 +426,14 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
       setMaterialsError(reason instanceof ApiError ? reason.message : "无法读取素材列表。");
     }
   }, [selectedSubsceneId, currentRoundId]);
+
+  useEffect(() => {
+    if (!latestMaterialEvent
+        || (latestMaterialEvent.type !== "completed" && latestMaterialEvent.type !== "failed")
+        || refreshedMaterialEvent.current === latestMaterialEvent.eventId) return;
+    refreshedMaterialEvent.current = latestMaterialEvent.eventId;
+    void loadMaterials();
+  }, [latestMaterialEvent, loadMaterials]);
 
   useEffect(() => {
     void loadMaterials();
@@ -1078,6 +1119,36 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                         disabled={!hasSubscenes || !latestRound}><Glyph name="plus" size={14} /> 上传素材</Button>
                     </div>
                   </div>
+                  {materialJob ? (
+                    <div className={`material-event-stream ${latestMaterialEvent?.type === "failed" ? "is-failed" : ""}`}
+                      role="status" aria-live="polite">
+                      <div className="material-event-stream__head">
+                        <div>
+                          <b>{latestMaterialEvent ? materialEventLabel(latestMaterialEvent) : "校验任务已排队"}</b>
+                          <small>任务 {materialJob.jobId} · SSE {materialStream.connection === "open" ? "已连接" : materialStream.connection === "closed" ? "已完成" : "连接中"}</small>
+                        </div>
+                        {(latestMaterialEvent?.type === "completed" || latestMaterialEvent?.type === "failed") ? (
+                          <button type="button" className="button button--quiet button--small"
+                            onClick={() => setMaterialJob(null)}>关闭</button>
+                        ) : null}
+                      </div>
+                      <div className="material-event-stream__progress">
+                        <progress max={100} value={latestMaterialEvent?.percent ?? 0}
+                          aria-label="素材处理进度" />
+                        <span>{latestMaterialEvent?.percent ?? 0}%</span>
+                      </div>
+                      {materialStream.events.length > 0 ? (
+                        <ol>
+                          {materialStream.events.slice(-3).map((event) => (
+                            <li key={event.eventId} className={event.type === "failed" ? "is-failed" : ""}>
+                              <time>{new Date(event.createdAt).toLocaleTimeString("zh-CN", { hour12: false })}</time>
+                              <span>{materialEventLabel(event)}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {!hasSubscenes ? (
                     <div className="subscene-empty">请先在面板 A 添加子场景。</div>
                   ) : !latestRound ? (
@@ -1591,7 +1662,11 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
           roundId={latestRound.id}
           subSceneId={selectedSubsceneId}
           onClose={() => setUploadOpen(false)}
-          onUploaded={() => void loadMaterials()}
+          onUploaded={(accepted) => {
+            refreshedMaterialEvent.current = null;
+            setMaterialJob(accepted);
+            void loadMaterials();
+          }}
         />
       ) : null}
     </div>

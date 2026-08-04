@@ -77,6 +77,11 @@ jobs:
           tags: knowledge-melting-pot-${{ matrix.service }}:ci
           cache-from: type=gha,scope=kmp-${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=kmp-${{ matrix.service }}
+      - name: Verify worker OCR runtime
+        if: matrix.service == 'worker'
+        run: |
+          docker run --rm --entrypoint tesseract knowledge-melting-pot-worker:ci --version
+          docker run --rm --entrypoint tesseract knowledge-melting-pot-worker:ci --list-langs | grep -Fx chi_sim
       - name: Scan ${{ matrix.service }} image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:

@@ -12,6 +12,7 @@ import com.knowledgemeltingpot.workbench.application.port.MaterialBlobRepository
 import com.knowledgemeltingpot.workbench.application.port.MaterialParserPort;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
+import com.knowledgemeltingpot.workbench.application.port.OcrPort;
 import com.knowledgemeltingpot.workbench.application.port.VirusScanPort;
 import com.knowledgemeltingpot.workbench.domain.ChunkEmbedding;
 import com.knowledgemeltingpot.workbench.domain.EmbeddingProfileVersion;
@@ -62,6 +63,7 @@ public class IngestMaterialJobHandler implements JobHandler {
     private final ObjectStoragePort objectStorage;
     private final VirusScanPort virusScan;
     private final MaterialParserPort parser;
+    private final Optional<OcrPort> ocr;
     private final MaterialRepository materialRepository;
     private final MaterialBlobRepository blobRepository;
     private final IngestCheckpointRepository checkpointRepository;
@@ -73,7 +75,8 @@ public class IngestMaterialJobHandler implements JobHandler {
     private final Clock clock;
 
     public IngestMaterialJobHandler(ObjectStoragePort objectStorage, VirusScanPort virusScan,
-            MaterialParserPort parser, MaterialRepository materialRepository, MaterialBlobRepository blobRepository,
+            MaterialParserPort parser, Optional<OcrPort> ocr, MaterialRepository materialRepository,
+            MaterialBlobRepository blobRepository,
             IngestCheckpointRepository checkpointRepository, ChunkRepository chunkRepository,
             EmbeddingProfileVersionRepository embeddingProfileRepository,
             ChunkEmbeddingRepository chunkEmbeddingRepository, List<EmbeddingPort> embeddingPorts,
@@ -81,6 +84,7 @@ public class IngestMaterialJobHandler implements JobHandler {
         this.objectStorage = objectStorage;
         this.virusScan = virusScan;
         this.parser = parser;
+        this.ocr = ocr;
         this.materialRepository = materialRepository;
         this.blobRepository = blobRepository;
         this.checkpointRepository = checkpointRepository;
@@ -188,13 +192,25 @@ public class IngestMaterialJobHandler implements JobHandler {
             } else {
                 context.progress(55, "PARSED");
                 MaterialParserPort.MaterialParseResult parseResult = parser.parse(tempFile, material.format());
+                MaterialParserPort.MaterialParseResult.Parsed parsed;
                 if (parseResult instanceof MaterialParserPort.MaterialParseResult.OcrRequired ocr) {
-                    parserName = ocr.parserName();
-                    parserVersion = ocr.parserVersion();
-                    return fail(jobId, material.id(), IngestStage.PARSED, "OCR_REQUIRED", false, null);
+                    if (this.ocr.isEmpty()) {
+                        return fail(jobId, material.id(), IngestStage.PARSED, "OCR_REQUIRED", false, null);
+                    }
+                    context.diagnostic(55, "OCR_PROCESSING", "OCR_STARTED");
+                    try {
+                        parsed = this.ocr.orElseThrow().recognizeScannedPdf(tempFile,
+                                (completed, total) -> context.progress(
+                                        55 + Math.min(20, (completed * 20) / Math.max(total, 1)),
+                                        "OCR_PROCESSING"));
+                    } catch (com.knowledgemeltingpot.workbench.application.port.MaterialParseException exception) {
+                        String code = ocrFailureCode(exception.getMessage());
+                        return fail(jobId, material.id(), IngestStage.PARSED, code, ocrRetryable(code), null);
+                    }
+                    context.diagnostic(75, "OCR_COMPLETED", "OCR_COMPLETED");
+                } else {
+                    parsed = (MaterialParserPort.MaterialParseResult.Parsed) parseResult;
                 }
-                MaterialParserPort.MaterialParseResult.Parsed parsed =
-                        (MaterialParserPort.MaterialParseResult.Parsed) parseResult;
                 parserName = parsed.parserName();
                 parserVersion = parsed.parserVersion();
                 checkpointRepository.updateStage(jobId, IngestStage.PARSED);
@@ -424,6 +440,21 @@ public class IngestMaterialJobHandler implements JobHandler {
                     Instant.now(clock));
         }
         return JobHandlingResult.failure(code, message);
+    }
+
+    private static String ocrFailureCode(String value) {
+        if (value != null && value.matches("OCR_[A-Z0-9_]{1,80}")) {
+            return value;
+        }
+        return "OCR_FAILED";
+    }
+
+    private static boolean ocrRetryable(String code) {
+        return switch (code) {
+            case "OCR_ENGINE_TIMEOUT", "OCR_PAGE_TIMEOUT", "OCR_ENGINE_UNAVAILABLE",
+                    "OCR_ENGINE_FAILED", "OCR_INTERRUPTED", "OCR_PDF_PROCESSING_FAILED" -> true;
+            default -> false;
+        };
     }
 
     public record Payload(UUID intentId, String objectKey, String clientEtag, String expectedSha256,

@@ -90,16 +90,24 @@ export function useJobEvents({ jobId, demo = false }: UseJobEventsOptions) {
     }
 
     const source = new EventSource(`/api/v1/jobs/${encodeURIComponent(jobId)}/events`, { withCredentials: true });
+    let terminal = false;
     source.onopen = () => setConnection("open");
     const consume = (fallbackType: JobEvent["type"]) => (event: Event) => {
       const parsed = parseJobEvent(jobId, fallbackType, event as MessageEvent<string>);
-      if (parsed) setEvents((current) => [...current.slice(-499), parsed]);
+      if (parsed) {
+        setEvents((current) => [...current.slice(-499), parsed]);
+        if (parsed.type === "completed" || parsed.type === "failed") {
+          terminal = true;
+          setConnection("closed");
+          source.close();
+        }
+      }
     };
     const listeners = eventTypes.map((type) => [type, consume(type)] as const);
     listeners.forEach(([type, listener]) => source.addEventListener(type, listener));
     source.onmessage = consume("progress");
     source.onerror = () => {
-      setConnection("connecting");
+      if (!terminal) setConnection("connecting");
     };
     return () => {
       listeners.forEach(([type, listener]) => source.removeEventListener(type, listener));
