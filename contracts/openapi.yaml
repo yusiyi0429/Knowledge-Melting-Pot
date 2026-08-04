@@ -1339,7 +1339,9 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Skills with their latest version; manifests are safe resource-only metadata.
+          description: >-
+            Skills with their latest version; manifests contain safe RESOURCE_ONLY
+            metadata or a bounded SANDBOX_V1 declarative program.
           content:
             application/json:
               schema:
@@ -1350,7 +1352,9 @@ paths:
           $ref: '#/components/responses/Problem'
     post:
       summary: Create a global TEMPLATE skill with its first immutable version
-      description: ADMIN only. The manifest is validated as resource-only JSON metadata and is never executed.
+      description: >-
+        ADMIN only. The manifest is validated as RESOURCE_ONLY metadata or a bounded
+        SANDBOX_V1 declarative program; arbitrary uploaded code is never executed.
       operationId: createSkill
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -2379,9 +2383,9 @@ components:
         manifest:
           type: string
           description: >-
-            Safe resource-only JSON metadata (resources/prompt/schema/files).
-            Must declare executionMode RESOURCE_ONLY; scripts, binaries, commands,
-            and secrets are rejected and the manifest is never executed.
+            Safe JSON metadata declaring RESOURCE_ONLY, or the reviewed SANDBOX_V1
+            declarative CLASSIFY_CONTAINS program. Scripts, binaries, commands,
+            dynamic dependencies and secrets are rejected; uploaded source code is never executed.
         packageHash:
           type: string
           pattern: '^[0-9a-f]{64}$'
@@ -2398,7 +2402,9 @@ components:
       properties:
         manifest:
           type: string
-          description: Safe resource-only JSON metadata; never executed.
+          description: >-
+            Safe RESOURCE_ONLY metadata or a bounded SANDBOX_V1 declarative
+            CLASSIFY_CONTAINS program; arbitrary source code is never executed.
         packageHash:
           type: string
           pattern: '^[0-9a-f]{64}$'

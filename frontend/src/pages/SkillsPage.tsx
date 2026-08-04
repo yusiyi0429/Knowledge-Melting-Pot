@@ -329,10 +329,10 @@ export function SkillsPage() {
       <PageHeader
         eyebrow="治理 / Skill 库"
         title="模板是起点，版本才是交付物"
-        description="Skill 首发只作为只读资源与提示包（RESOURCE_ONLY）；Manifest 元数据永不执行。仅 ADMIN 可建模板，OPERATOR/ADMIN 可建实例与版本。"
+        description="Skill 支持只读资源包（RESOURCE_ONLY）和受限声明式规则（SANDBOX_V1）；不执行上传的源代码。仅 ADMIN 可建模板，OPERATOR/ADMIN 可建实例与版本。"
         actions={isAdmin ? <Button className="button--primary" onClick={() => setDialog({ mode: "template" })}><Glyph name="plus" />新建模板</Button> : null}
       />
-      <div className="security-note"><Glyph name="lock" size={17} /><div><b>安全边界</b><p>本里程碑不执行 Skill 包内的 Shell、Python 或校验脚本；Manifest 只接受 resource-only 元数据。</p></div><Status tone="success">只读资源模式</Status></div>
+      <div className="security-note"><Glyph name="lock" size={17} /><div><b>安全边界</b><p>不执行 Skill 包内的 Shell、Python、JavaScript、WASM、二进制或校验脚本；SANDBOX_V1 仅运行经校验的声明式分类规则。</p></div><Status tone="success">受限声明式模式</Status></div>
       {loadError ? (
         <div className="load-error" role="alert">
           <Glyph name="warning" size={16} />
@@ -390,7 +390,7 @@ export function SkillsPage() {
         <dialog className="scene-dialog" aria-labelledby="manifest-dialog-title" open>
           <div className="model-dialog__form">
             <header className="model-dialog__head">
-              <div><h2 id="manifest-dialog-title">Manifest · {manifestView.name} v{manifestView.version ?? "—"}</h2><p>只读资源元数据（RESOURCE_ONLY），永不执行。</p></div>
+              <div><h2 id="manifest-dialog-title">Manifest · {manifestView.name} v{manifestView.version ?? "—"}</h2><p>只读展示；仅 SANDBOX_V1 声明式规则可由隔离评测进程解释，源代码永不执行。</p></div>
               <button type="button" className="icon-button" aria-label="关闭" onClick={() => setManifestView(null)}><Glyph name="close" size={16} /></button>
             </header>
             <div className="model-dialog__body">
@@ -401,7 +401,7 @@ export function SkillsPage() {
       ) : null}
 
       {dialog?.mode === "template" ? (
-        <SkillDialog title="新建通用模板" hint="仅 ADMIN；Manifest 必须为 resource-only 元数据。" withNameFields saving={saving} error={formError}
+        <SkillDialog title="新建通用模板" hint="仅 ADMIN；Manifest 只允许 RESOURCE_ONLY 或 SANDBOX_V1 声明式规则。" withNameFields saving={saving} error={formError}
           onClose={() => setDialog(null)} onSubmit={(values) => void submit(values)} />
       ) : null}
       {dialog?.mode === "instance" ? (

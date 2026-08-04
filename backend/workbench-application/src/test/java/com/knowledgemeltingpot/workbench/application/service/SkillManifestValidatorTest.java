@@ -42,6 +42,7 @@ class SkillManifestValidatorTest {
         for (String manifest : new String[]{
                 "{\"executionMode\":\"SANDBOX_V1\",\"script\":\"print(1)\"}",
                 "{\"executionMode\":\"SANDBOX_V1\",\"program\":{\"kind\":\"SHELL\",\"rules\":[],\"defaultPrediction\":\"x\"}}",
+                "{\"executionMode\":\"SANDBOX_V1\",\"program\":{\"kind\":\"PYTHON\",\"rules\":[{\"containsAny\":[\"x\"],\"prediction\":\"y\"}],\"defaultPrediction\":\"z\"}}",
                 "{\"executionMode\":\"SANDBOX_V1\",\"program\":{\"kind\":\"CLASSIFY_CONTAINS\",\"rules\":[{\"containsAny\":[\"x\"],\"prediction\":\"y\",\"url\":\"http://example.com\"}],\"defaultPrediction\":\"z\"}}",
                 "{\"executionMode\":\"SANDBOX_V1\",\"program\":{\"kind\":\"CLASSIFY_CONTAINS\",\"rules\":[],\"defaultPrediction\":\"z\"}}",
         }) {

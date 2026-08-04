@@ -10,9 +10,10 @@ import java.util.Set;
 import org.springframework.stereotype.Component;
 
 /**
- * Validates skill manifests as safe, resource-only JSON metadata. The manifest
- * is never executed and cannot carry scripts, binaries, commands, or secrets —
- * including inside nested resources/prompt/schema objects or array elements.
+ * Validates safe RESOURCE_ONLY metadata and the bounded SANDBOX_V1 declarative
+ * program. Arbitrary source code is never executed and manifests cannot carry
+ * scripts, binaries, commands, or secrets — including inside nested objects or
+ * array elements.
  */
 @Component
 public final class SkillManifestValidator {
