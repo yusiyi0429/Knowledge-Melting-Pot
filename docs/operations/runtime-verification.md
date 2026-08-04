@@ -76,7 +76,7 @@ docker exec "$api_id" wget -qO- \
   http://localhost:8080/actuator/health/readiness | jq -c '{status}'
 
 docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
-  "SELECT version || ':' || success FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11') ORDER BY installed_rank;"
+  "SELECT version || ':' || success FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11','12','13') ORDER BY installed_rank;"
 
 docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
   "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('spring_session','spring_session_attributes');"
@@ -92,7 +92,7 @@ docker inspect "$api_id" --format '{{json .HostConfig.PortBindings}}'
 docker inspect "$worker_id" --format '{{json .HostConfig.PortBindings}}'
 ```
 
-预期迁移输出为 `1:t` 到 `11:t`，会话表计数为 `2`，管理员检查为 `true:true`，两个端口检查均为 `{}`。Worker 必须稳定运行且不得创建 SDK 默认的 `/app/logs`。
+预期迁移输出为 `1:t` 到 `13:t`，会话表计数为 `2`，管理员检查为 `true:true`，两个端口检查均为 `{}`。V12 应存在七条最新角色模板，V13 应存在六张探索/通知相关表。Worker 必须稳定运行且不得创建 SDK 默认的 `/app/logs`。
 
 再通过 Web 反向代理执行真实 CSRF + Session 登录，并确认两类 Cookie 都带 `Secure`。现代浏览器和 curl 将 localhost 视为安全来源；其他纯 HTTP 调试地址必须显式设置 `KMP_SECURE_COOKIES=false`，不得把该覆盖用于正式部署。请求正文经 stdin 传递，不把密码拼进 curl 参数；Cookie jar 使用临时文件：
 
@@ -155,7 +155,7 @@ unset KMP_BOOTSTRAP_ADMIN_USERNAME KMP_BOOTSTRAP_ADMIN_PASSWORD KMP_MODEL_MASTER
 
 ## 最近一次本机证据
 
-2026-08-04 使用一次性 Secret 和独立项目 `kmp-runtime-check` 重新构建三张镜像并执行仓库脚本通过：输出 `RUNTIME_OK readiness=UP`，Flyway V1–V11 全部成功，初始管理员唯一且要求首次改密，XSRF 与 Session Cookie 均带 `Secure`，真实 CSRF 登录返回 204 并写入一条 Spring Session；Worker 稳定运行、Agent Runtime 与 Worker Flyway 均关闭、没有 `/app/logs`，API/Worker 无宿主端口，日志未命中三项一次性 Secret。验证结束后输出 `CLEANUP_OK containers=0 volumes=0`。
+2026-08-04 使用一次性 Secret 和独立项目 `kmp-runtime-check` 重新构建三张镜像并执行仓库脚本通过：输出 `RUNTIME_OK readiness=UP`，Flyway V1–V13 全部成功、存在七条角色模板及六张探索/通知相关表，初始管理员唯一且要求首次改密，XSRF 与 Session Cookie 均带 `Secure`，真实 CSRF 登录返回 204 并写入一条 Spring Session；Worker 稳定运行、Agent Runtime 与 Worker Flyway 均关闭、没有 `/app/logs`，API/Worker 无宿主端口，日志未命中三项一次性 Secret。验证结束后输出 `CLEANUP_OK containers=0 volumes=0`。
 
 ## KnowledgeIR、萃取与对齐闭环
 
@@ -166,12 +166,16 @@ scripts/verify-knowledge-workflow.sh
 ```
 
 - 真实预签名分片上传、MinIO、ClamAV、Tika/TXT 解析与 READY Chunk。
-- 冻结模型/Skill 版本和素材的 Map/Reduce Job，持久化 Map、Reduce、KnowledgeIR 与 SourceRef。
+- 创建 Scene 级知识萃取挂载，通过配置导入 Preview/Apply 创建对齐挂载，并验证 Global→Scene→SubScene 有效配置解析。
+- 仅提交 Round ID 启动萃取，由服务端解析并冻结模型/Skill/Agent 配置版本和哈希；持久化 Map、Reduce、KnowledgeIR 与 SourceRef。
 - 无结构块的 Markdown 返回 422 且不新增 Revision。
 - 监管 AlignmentProposal 含结构化 Diff；旧 ETag 采纳返回 412，正确 ETag 生成新 Revision 和不可变 adoption 记录。
-- 数据库断言 Flyway V1–V11、两份 Revision 投影、Holdout 零混入；退出时断言容器和卷均为零。
+- 将同一合成素材放入探索 staging，运行 `SCENE_EXPLORE`，以 ETag 采纳候选后创建正式 Scene/SubScene/Round；断言复用原 material/blob/chunk，跨场景搜索命中且终态 Job 生成用户通知。
+- 数据库断言 Flyway V1–V14、七角色模板、挂载/导入应用、萃取与对齐 Job 配置快照、两份 Revision 投影、Holdout 零混入、探索采纳、通知、Release 绑定评测及独立 Evaluation Worker 领取记录；退出时断言容器和卷均为零。
 
-该门禁通过显式 `workbench.agent.test-stub-enabled=true` 使用确定性本地 Adapter，只验证编排、持久化、安全边界和协议，不调用外部模型，也不代表模型质量。2026-08-04 最新运行输出 `KNOWLEDGE_WORKFLOW_OK ... invalid_markdown=422 stale_adopt=412 proposal=ADOPTED`，随后输出 `CLEANUP_OK containers=0 volumes=0`。
+该门禁的知识流程通过显式 `workbench.agent.test-stub-enabled=true` 使用确定性本地 Adapter；评测流程由独立 `evaluation-worker` 调用 `SANDBOX_V1` 声明式分类器。它验证编排、持久化、安全边界和协议，不调用外部模型，也不代表模型质量。沙箱负向门禁会验证脚本载荷被拒绝、外部网络与只读文件系统写入失败、`cap_drop=ALL`、`no-new-privileges` 以及容器环境不含应用 Secret。
+
+2026-08-04 最新运行输出 `KNOWLEDGE_WORKFLOW_OK ... migrations=...14:true ... proposal=ADOPTED release=<sha256> evaluation=SUCCEEDED:3:3:1.000000:3/3 accuracy=1.000000 exploration=ACCEPTED blob_reused=t search=true notification=1`，随后输出 `CLEANUP_OK containers=0 volumes=0`。其中 3/3 是合成样本对受控声明式分类器的确定性协议验收，不是外部模型准确率证明。
 
 ## 崩溃续跑与同哈希去重破坏性演练
 

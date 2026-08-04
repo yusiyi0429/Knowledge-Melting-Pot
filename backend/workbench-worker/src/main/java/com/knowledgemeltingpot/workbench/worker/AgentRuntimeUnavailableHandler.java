@@ -14,7 +14,8 @@ public class AgentRuntimeUnavailableHandler implements JobHandler {
             JobType.EXTRACT,
             JobType.REEXTRACT,
             JobType.ALIGN,
-            JobType.SCENE_EXPLORE);
+            JobType.SCENE_EXPLORE,
+            JobType.EVALUATE);
 
     @Override
     public boolean supports(JobType type) {

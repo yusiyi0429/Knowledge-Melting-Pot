@@ -12,6 +12,7 @@ import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
 import com.knowledgemeltingpot.workbench.application.port.SkillRepository;
 import com.knowledgemeltingpot.workbench.application.port.TrustedContext;
 import com.knowledgemeltingpot.workbench.domain.DocumentRevision;
+import com.knowledgemeltingpot.workbench.domain.AgentRole;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRound;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRun;
 import com.knowledgemeltingpot.workbench.domain.Job;
@@ -39,11 +40,13 @@ public class ExtractionService {
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final AgentConfigurationService agentConfigurationService;
 
     public ExtractionService(SceneRepository sceneRepository, ModelConnectionRepository modelRepository,
             SkillRepository skillRepository, MaterialSelectionService materialSelectionService,
             DocumentService documentService, JobService jobService, ExtractionRunRepository runRepository,
-            AuditService auditService, ObjectMapper objectMapper, Clock clock) {
+            AuditService auditService, ObjectMapper objectMapper, Clock clock,
+            AgentConfigurationService agentConfigurationService) {
         this.sceneRepository = sceneRepository;
         this.modelRepository = modelRepository;
         this.skillRepository = skillRepository;
@@ -54,6 +57,7 @@ public class ExtractionService {
         this.auditService = auditService;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.agentConfigurationService = agentConfigurationService;
     }
 
     @Transactional
@@ -66,11 +70,32 @@ public class ExtractionService {
         if (!round.subSceneId().equals(subSceneId)) {
             throw new IllegalArgumentException("extraction round does not belong to the requested sub-scene");
         }
-        modelRepository.findConfigVersion(modelConfigVersionId)
+        var subScene = sceneRepository.findSubScene(subSceneId).orElseThrow();
+        UUID roleConfigVersionId = null;
+        String roleConfigHash = null;
+        if (modelConfigVersionId == null && skillVersionId == null) {
+            var effective = agentConfigurationService.resolve(subScene.sceneId(), subSceneId).stream()
+                    .filter(item -> item.role() == AgentRole.KNOWLEDGE_EXTRACTOR)
+                    .findFirst().orElseThrow();
+            if (!effective.configured()) {
+                throw new ConflictException("KNOWLEDGE_EXTRACTOR Agent configuration is incomplete or disabled");
+            }
+            modelConfigVersionId = effective.modelConfigVersionId();
+            skillVersionId = effective.skillVersionId();
+            roleConfigVersionId = effective.effectiveMountVersionId();
+            roleConfigHash = effective.effectiveHash();
+        } else if (modelConfigVersionId == null || skillVersionId == null) {
+            throw new IllegalArgumentException("modelConfigVersionId and skillVersionId must both be present or absent");
+        }
+        UUID resolvedModelVersionId = modelConfigVersionId;
+        UUID resolvedSkillVersionId = skillVersionId;
+        UUID resolvedRoleConfigVersionId = roleConfigVersionId;
+        String resolvedRoleConfigHash = roleConfigHash;
+        modelRepository.findConfigVersion(resolvedModelVersionId)
                 .orElseThrow(() -> new NotFoundException("model configuration version not found: "
-                        + modelConfigVersionId));
-        skillRepository.findVersion(skillVersionId)
-                .orElseThrow(() -> new NotFoundException("Skill version not found: " + skillVersionId));
+                        + resolvedModelVersionId));
+        skillRepository.findVersion(resolvedSkillVersionId)
+                .orElseThrow(() -> new NotFoundException("Skill version not found: " + resolvedSkillVersionId));
 
         List<TrustedContext> contexts = materialSelectionService.knowledgeContext(roundId, subSceneId,
                 ContextBudget.defaults());
@@ -80,21 +105,25 @@ public class ExtractionService {
         }
 
         DocumentRevision base = documentService.find(subSceneId).orElse(null);
-        String inputHash = canonicalInputHash(subSceneId, roundId, modelConfigVersionId, skillVersionId, base, chunks);
-        Map<String, Object> payload = Map.of(
-                "subSceneId", subSceneId,
-                "roundId", roundId,
-                "modelConfigVersionId", modelConfigVersionId,
-                "skillVersionId", skillVersionId,
-                "inputHash", inputHash);
+        String inputHash = canonicalInputHash(subSceneId, roundId, resolvedModelVersionId, resolvedSkillVersionId,
+                resolvedRoleConfigHash, base, chunks);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("subSceneId", subSceneId);
+        payload.put("roundId", roundId);
+        payload.put("modelConfigVersionId", resolvedModelVersionId);
+        payload.put("skillVersionId", resolvedSkillVersionId);
+        if (resolvedRoleConfigVersionId != null) payload.put("roleConfigVersionId", resolvedRoleConfigVersionId);
+        if (resolvedRoleConfigHash != null) payload.put("roleConfigHash", resolvedRoleConfigHash);
+        payload.put("inputHash", inputHash);
         JobSubmission submission = jobService.submit(JobType.EXTRACT, "SUB_SCENE", subSceneId, payload,
                 actorId, idempotencyKey, traceId);
         if (!submission.replayed()) {
             Instant now = Instant.now(clock);
             Job job = submission.job();
             ExtractionRun run = new ExtractionRun(UUID.randomUUID(), job.id(), subSceneId, subSceneId, roundId,
-                    base == null ? null : base.id(), base == null ? null : base.etag(), modelConfigVersionId,
-                    skillVersionId, inputHash, ExtractionRun.Stage.FROZEN, actorId, now, now);
+                    base == null ? null : base.id(), base == null ? null : base.etag(), resolvedModelVersionId,
+                    resolvedSkillVersionId, resolvedRoleConfigVersionId, resolvedRoleConfigHash, inputHash,
+                    ExtractionRun.Stage.FROZEN, actorId, now, now);
             runRepository.insert(run, chunks);
             auditService.record(actorId, "EXTRACTION_RUN_FROZEN", "EXTRACTION_RUN", run.id(),
                     Map.of("jobId", job.id(), "documentId", subSceneId, "roundId", roundId,
@@ -124,12 +153,13 @@ public class ExtractionService {
     }
 
     private String canonicalInputHash(UUID subSceneId, UUID roundId, UUID modelVersionId, UUID skillVersionId,
-            DocumentRevision base, List<FrozenExtractionChunk> chunks) {
+            String roleConfigHash, DocumentRevision base, List<FrozenExtractionChunk> chunks) {
         Map<String, Object> canonical = new LinkedHashMap<>();
         canonical.put("subSceneId", subSceneId);
         canonical.put("roundId", roundId);
         canonical.put("modelConfigVersionId", modelVersionId);
         canonical.put("skillVersionId", skillVersionId);
+        canonical.put("roleConfigHash", roleConfigHash);
         canonical.put("baseRevisionId", base == null ? null : base.id());
         canonical.put("chunks", chunks.stream()
                 .map(chunk -> List.of(chunk.materialId(), chunk.materialSha256(), chunk.chunk().id(),

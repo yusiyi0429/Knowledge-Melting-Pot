@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import com.knowledgemeltingpot.workbench.application.port.JobLeaseRepository;
 import com.knowledgemeltingpot.workbench.application.service.JobService;
+import com.knowledgemeltingpot.workbench.application.service.NotificationService;
 import com.knowledgemeltingpot.workbench.domain.JobType;
 import java.time.Clock;
 import java.time.Duration;
@@ -43,7 +44,7 @@ class JobWorkerAcceptedTypesTest {
                 .thenReturn(Optional.empty());
         Clock clock = Clock.fixed(Instant.parse("2026-08-03T00:00:00Z"), ZoneOffset.UTC);
 
-        JobWorker worker = new JobWorker(leases, jobs, List.of(ingestHandler), jobExecutor, heartbeatExecutor,
+        JobWorker worker = new JobWorker(leases, jobs, mock(NotificationService.class), List.of(ingestHandler), jobExecutor, heartbeatExecutor,
                 clock, "test-worker", Duration.ofMinutes(2), 1, "INGEST");
         worker.poll();
 
@@ -61,7 +62,7 @@ class JobWorkerAcceptedTypesTest {
                 .thenReturn(Optional.empty());
         Clock clock = Clock.fixed(Instant.parse("2026-08-03T00:00:00Z"), ZoneOffset.UTC);
 
-        JobWorker worker = new JobWorker(leases, jobs, List.of(ingestHandler), jobExecutor, heartbeatExecutor,
+        JobWorker worker = new JobWorker(leases, jobs, mock(NotificationService.class), List.of(ingestHandler), jobExecutor, heartbeatExecutor,
                 clock, "test-worker", Duration.ofMinutes(2), 1, "");
         worker.poll();
 
@@ -80,7 +81,7 @@ class JobWorkerAcceptedTypesTest {
                 any(), any())).thenReturn(Optional.empty());
         Clock clock = Clock.fixed(Instant.parse("2026-08-03T00:00:00Z"), ZoneOffset.UTC);
 
-        JobWorker worker = new JobWorker(leases, jobs, List.of(handler), jobExecutor, heartbeatExecutor,
+        JobWorker worker = new JobWorker(leases, jobs, mock(NotificationService.class), List.of(handler), jobExecutor, heartbeatExecutor,
                 clock, "test-worker", Duration.ofMinutes(2), 1, "INGEST,GENERATE_ASSET,GENERATE_ALL");
         worker.poll();
 

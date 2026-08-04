@@ -13,10 +13,13 @@ import static org.mockito.Mockito.when;
 
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRecord;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRepository;
+import com.knowledgemeltingpot.workbench.application.port.ExplorationRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialSelection;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRound;
+import com.knowledgemeltingpot.workbench.domain.ExplorationSession;
+import com.knowledgemeltingpot.workbench.domain.ExplorationStatus;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRoundStatus;
 import com.knowledgemeltingpot.workbench.domain.Job;
 import com.knowledgemeltingpot.workbench.domain.JobStatus;
@@ -53,6 +56,8 @@ class MaterialServiceTest {
     @Mock
     private MaterialRepository materials;
     @Mock
+    private ExplorationRepository explorations;
+    @Mock
     private SceneRepository scenes;
     @Mock
     private IdempotencyRepository idempotency;
@@ -66,7 +71,7 @@ class MaterialServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new MaterialService(materials, scenes, idempotency, jobs, audit, Optional.empty(),
+        service = new MaterialService(materials, explorations, scenes, idempotency, jobs, audit, Optional.empty(),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         UUID sceneId = UUID.randomUUID();
         primary = new SubScene(UUID.randomUUID(), sceneId, "Primary", "", NOW, NOW);
@@ -92,6 +97,26 @@ class MaterialServiceTest {
             assertThat(binding.partition()).isEqualTo(MaterialPartition.SOURCE);
         });
         verify(materials).insertBindings(result.bindings());
+    }
+
+    @Test
+    void stagesExplorationMaterialWithoutCreatingAPrematureRoundBinding() {
+        UUID sessionId = UUID.randomUUID();
+        ExplorationSession session = new ExplorationSession(sessionId, "风险场景探索", ExplorationStatus.DRAFT,
+                null, null, null, null, "", 0, ACTOR_ID, NOW, NOW);
+        when(explorations.find(sessionId)).thenReturn(Optional.of(session));
+        when(explorations.linkMaterial(eq(sessionId), any(), eq(NOW))).thenReturn(true);
+        when(materials.insert(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(materials.insertIntent(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        MaterialUploadIntentResult result = service.createUploadIntent(new MaterialUploadCommand(
+                "explore.txt", 12, "text/plain", "a".repeat(64), null, Set.of(),
+                MaterialPartition.SOURCE, MaterialShareScope.ROUND, false, sessionId),
+                ACTOR_ID, null, "trace");
+
+        assertThat(result.bindings()).isEmpty();
+        verify(materials).insertBindings(List.of());
+        verify(explorations).linkMaterial(sessionId, result.material().id(), NOW);
     }
 
     @Test

@@ -32,6 +32,10 @@ workbench:
     api-key: ${KMP_AGENT_API_KEY:}
     timeout: ${KMP_AGENT_TIMEOUT:PT1M}
     temperature: ${KMP_AGENT_TEMPERATURE:0.2}
+  skill-sandbox:
+    enabled: ${KMP_SKILL_SANDBOX_ENABLED:false}
+    url: ${KMP_SKILL_SANDBOX_URL:http://skill-sandbox:8081/v1/execute}
+    timeout: ${KMP_SKILL_SANDBOX_TIMEOUT:PT5S}
   material-ingest:
     enabled: ${KMP_MATERIAL_INGEST_ENABLED:false}
 

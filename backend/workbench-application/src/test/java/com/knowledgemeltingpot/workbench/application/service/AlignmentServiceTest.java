@@ -14,6 +14,10 @@ import com.knowledgemeltingpot.workbench.application.error.ConflictException;
 import com.knowledgemeltingpot.workbench.application.error.PreconditionFailedException;
 import com.knowledgemeltingpot.workbench.application.port.AlignmentProposalRepository;
 import com.knowledgemeltingpot.workbench.application.port.RegulatoryMaterialAccessPort;
+import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
+import com.knowledgemeltingpot.workbench.domain.AgentMountScope;
+import com.knowledgemeltingpot.workbench.domain.AgentRole;
+import com.knowledgemeltingpot.workbench.domain.SubScene;
 import com.knowledgemeltingpot.workbench.domain.AlignmentAction;
 import com.knowledgemeltingpot.workbench.domain.AlignmentProposal;
 import com.knowledgemeltingpot.workbench.domain.AlignmentProposalStatus;
@@ -42,6 +46,8 @@ class AlignmentServiceTest {
     private ObjectMapper mapper;
     private KnowledgeMarkdownCodec codec;
     private KnowledgeDiffCalculator diff;
+    private SceneRepository scenes;
+    private AgentConfigurationService agentConfigurations;
 
     @BeforeEach
     void setUp() {
@@ -52,6 +58,8 @@ class AlignmentServiceTest {
         KnowledgeIrValidator validator = new KnowledgeIrValidator(mapper);
         codec = new KnowledgeMarkdownCodec(mapper, validator);
         diff = new KnowledgeDiffCalculator();
+        scenes = mock(SceneRepository.class);
+        agentConfigurations = mock(AgentConfigurationService.class);
     }
 
     @Test
@@ -62,6 +70,10 @@ class AlignmentServiceTest {
         when(documents.getRevision(base.id())).thenReturn(base);
         when(documents.get(documentId)).thenReturn(base);
         when(documents.getProjection(base.id())).thenReturn(ir);
+        UUID sceneId = UUID.randomUUID();
+        when(scenes.findSubScene(base.subSceneId())).thenReturn(Optional.of(new SubScene(base.subSceneId(),
+                sceneId, "子场景", "", NOW, NOW)));
+        when(agentConfigurations.resolve(sceneId, base.subSceneId())).thenReturn(List.of(effectiveAlignment()));
         Job queued = queuedJob(documentId);
         when(jobs.submit(eq(JobType.ALIGN), eq("KNOWLEDGE_DOCUMENT"), eq(documentId), anyMap(),
                 eq(ACTOR_ID), eq("idem-1"), eq("trace-1"))).thenReturn(new JobSubmission(queued, false));
@@ -75,7 +87,8 @@ class AlignmentServiceTest {
         verify(jobs).submit(eq(JobType.ALIGN), eq("KNOWLEDGE_DOCUMENT"), eq(documentId), payload.capture(),
                 eq(ACTOR_ID), eq("idem-1"), eq("trace-1"));
         assertThat(payload.getValue()).containsOnlyKeys("documentId", "baseRevisionId", "baseEtag", "action",
-                "regulatoryMaterialIds");
+                "regulatoryMaterialIds", "modelConfigVersionId", "skillVersionId", "roleConfigVersionId",
+                "roleConfigHash");
         assertThat(payload.getValue().toString()).doesNotContain("content", "prompt", "markdown");
     }
 
@@ -148,7 +161,14 @@ class AlignmentServiceTest {
 
     private AlignmentService service(List<RegulatoryMaterialAccessPort> ports) {
         return new AlignmentService(proposals, ports, documents, codec, diff, jobs, mock(AuditService.class), mapper,
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), scenes, agentConfigurations);
+    }
+
+    private AgentConfigurationService.EffectiveAgentConfiguration effectiveAlignment() {
+        return new AgentConfigurationService.EffectiveAgentConfiguration(AgentRole.ALIGNMENT_REVIEWER,
+                "冲突检测与对齐智能体", "环节二", true, UUID.randomUUID(), UUID.randomUUID(), "{}",
+                "d".repeat(64), UUID.randomUUID(), AgentMountScope.SCENE, AgentMountScope.SCENE,
+                AgentMountScope.SCENE, "SCENE", List.of());
     }
 
     private KnowledgeIr ir(UUID documentId, UUID subSceneId, UUID roundId, List<KnowledgeIr.SourceRef> refs) {

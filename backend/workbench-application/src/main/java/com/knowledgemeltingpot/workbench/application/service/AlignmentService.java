@@ -9,6 +9,8 @@ import com.knowledgemeltingpot.workbench.application.error.PreconditionFailedExc
 import com.knowledgemeltingpot.workbench.application.error.PreconditionRequiredException;
 import com.knowledgemeltingpot.workbench.application.port.AlignmentProposalRepository;
 import com.knowledgemeltingpot.workbench.application.port.RegulatoryMaterialAccessPort;
+import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
+import com.knowledgemeltingpot.workbench.domain.AgentRole;
 import com.knowledgemeltingpot.workbench.domain.AlignmentAction;
 import com.knowledgemeltingpot.workbench.domain.AlignmentProposal;
 import com.knowledgemeltingpot.workbench.domain.AlignmentProposalStatus;
@@ -39,12 +41,15 @@ public class AlignmentService {
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final SceneRepository sceneRepository;
+    private final AgentConfigurationService agentConfigurationService;
 
     public AlignmentService(AlignmentProposalRepository proposalRepository,
             List<RegulatoryMaterialAccessPort> regulatoryMaterialPorts,
             DocumentService documentService, KnowledgeMarkdownCodec markdownCodec,
             KnowledgeDiffCalculator diffCalculator, JobService jobService, AuditService auditService,
-            ObjectMapper objectMapper, Clock clock) {
+            ObjectMapper objectMapper, Clock clock, SceneRepository sceneRepository,
+            AgentConfigurationService agentConfigurationService) {
         this.proposalRepository = proposalRepository;
         this.regulatoryMaterialPorts = List.copyOf(regulatoryMaterialPorts);
         this.documentService = documentService;
@@ -54,6 +59,8 @@ public class AlignmentService {
         this.auditService = auditService;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.sceneRepository = sceneRepository;
+        this.agentConfigurationService = agentConfigurationService;
     }
 
     @Transactional
@@ -65,6 +72,14 @@ public class AlignmentService {
             throw new PreconditionFailedException("alignment base is not the current document revision");
         }
         documentService.getProjection(baseRevision.id());
+        var subScene = sceneRepository.findSubScene(baseRevision.subSceneId())
+                .orElseThrow(() -> new NotFoundException("sub-scene not found: " + baseRevision.subSceneId()));
+        var agentConfiguration = agentConfigurationService.resolve(subScene.sceneId(), subScene.id()).stream()
+                .filter(item -> item.role() == AgentRole.ALIGNMENT_REVIEWER)
+                .findFirst().orElseThrow();
+        if (!agentConfiguration.configured()) {
+            throw new ConflictException("ALIGNMENT_REVIEWER Agent configuration is incomplete or disabled");
+        }
         List<UUID> materialIds = validateRegulatoryMaterials(documentId, command.action(),
                 command.regulatoryMaterialIds());
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -73,6 +88,10 @@ public class AlignmentService {
         payload.put("baseEtag", baseRevision.etag());
         payload.put("action", command.action());
         payload.put("regulatoryMaterialIds", materialIds);
+        payload.put("modelConfigVersionId", agentConfiguration.modelConfigVersionId());
+        payload.put("skillVersionId", agentConfiguration.skillVersionId());
+        payload.put("roleConfigVersionId", agentConfiguration.effectiveMountVersionId());
+        payload.put("roleConfigHash", agentConfiguration.effectiveHash());
         return jobService.submit(JobType.ALIGN, "KNOWLEDGE_DOCUMENT", documentId, payload, actorId,
                 idempotencyKey, traceId);
     }

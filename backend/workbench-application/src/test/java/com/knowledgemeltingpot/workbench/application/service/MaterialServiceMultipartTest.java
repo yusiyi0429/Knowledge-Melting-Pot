@@ -14,6 +14,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRepository;
+import com.knowledgemeltingpot.workbench.application.port.ExplorationRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
@@ -54,6 +55,8 @@ class MaterialServiceMultipartTest {
     @Mock
     private MaterialRepository materials;
     @Mock
+    private ExplorationRepository explorations;
+    @Mock
     private SceneRepository scenes;
     @Mock
     private IdempotencyRepository idempotency;
@@ -69,7 +72,7 @@ class MaterialServiceMultipartTest {
 
     @BeforeEach
     void setUp() {
-        service = new MaterialService(materials, scenes, idempotency, jobs, audit, Optional.of(objectStorage),
+        service = new MaterialService(materials, explorations, scenes, idempotency, jobs, audit, Optional.of(objectStorage),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         UUID sceneId = UUID.randomUUID();
         primary = new SubScene(UUID.randomUUID(), sceneId, "Primary", "", NOW, NOW);

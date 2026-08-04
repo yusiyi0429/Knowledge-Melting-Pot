@@ -373,6 +373,159 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+  /explorations:
+    get:
+      summary: List recent scene exploration sessions
+      operationId: listExplorations
+      responses:
+        '200':
+          description: Recent sessions ordered by update time.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ExplorationSession' } }
+        '401': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Create an isolated scene exploration staging session
+      operationId: createExploration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title]
+              properties: { title: { type: string, minLength: 1, maxLength: 200 } }
+      responses:
+        '201':
+          description: Draft exploration created; ETag contains its acceptance baseline.
+          headers: { ETag: { schema: { type: string } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExplorationSession' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /explorations/{sessionId}:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: Get staging materials, immutable candidates and acceptance lineage
+      operationId: getExploration
+      responses:
+        '200':
+          description: Complete exploration state.
+          headers: { ETag: { schema: { type: string } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExplorationDetail' } } }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /explorations/{sessionId}/analysis-jobs:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      summary: Freeze ready staging materials and run the global SCENE_EXPLORER configuration
+      operationId: startExploration
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content: { application/json: { schema: { type: object, additionalProperties: false } } }
+      responses:
+        '202': { $ref: '#/components/responses/AcceptedJob' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /explorations/{sessionId}/candidates/{candidateId}/accept:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: candidateId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: '#/components/parameters/IfMatch'
+    post:
+      summary: Accept one candidate and bind the same staged materials to a new formal round
+      operationId: acceptExplorationCandidate
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExplorationAcceptanceRequest' }
+      responses:
+        '200':
+          description: Formal scene lineage and the reused material identifiers.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExplorationAcceptanceResult' } } }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '428': { $ref: '#/components/responses/Problem' }
+  /search:
+    get:
+      summary: Search scenes, current rule documents and ready source file names
+      operationId: searchWorkbench
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2, maxLength: 100 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: Bounded typed search results; document excerpts are capped.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
+        '400': { $ref: '#/components/responses/Problem' }
+  /notifications:
+    get:
+      summary: Get the current user's durable task notifications
+      operationId: listNotifications
+      parameters:
+        - name: unreadOnly
+          in: query
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+      responses:
+        '200':
+          description: Notification inbox.
+          content: { application/json: { schema: { $ref: '#/components/schemas/NotificationInbox' } } }
+        '401': { $ref: '#/components/responses/Problem' }
+  /notifications/{notificationId}/read:
+    parameters:
+      - name: notificationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      summary: Mark one owned notification read
+      operationId: markNotificationRead
+      responses:
+        '204': { description: Notification marked read. }
+        '404': { $ref: '#/components/responses/Problem' }
+  /notifications/read:
+    patch:
+      summary: Mark all current-user notifications read
+      operationId: markAllNotificationsRead
+      responses:
+        '200':
+          description: Number of changed rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties: { updated: { type: integer, minimum: 0 } }
+        '401': { $ref: '#/components/responses/Problem' }
   /materials/upload-intents:
     post:
       summary: Declare a quarantined material upload and report upload capability
@@ -848,6 +1001,85 @@ paths:
                 $ref: '#/components/schemas/ReleaseManifest'
         '404':
           $ref: '#/components/responses/Problem'
+  /releases/{releaseId}/subscenes/{subSceneId}/evaluation-jobs:
+    post:
+      summary: Start a release-bound Holdout evaluation
+      description: >-
+        Evaluates the QA_EVALUATOR configuration and Skill frozen in the published release.
+        Cases are selected only from READY LABELED_HOLDOUT materials in the requested round;
+        expected answers are never sent to the model.
+      operationId: createEvaluationJob
+      parameters:
+        - name: releaseId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: subSceneId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEvaluationRequest'
+      responses:
+        '202':
+          description: Evaluation job accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationAccepted'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /releases/{releaseId}/subscenes/{subSceneId}/evaluation-runs:
+    get:
+      summary: List recent evaluation runs for one released sub-scene
+      operationId: listEvaluationRuns
+      parameters:
+        - name: releaseId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: subSceneId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Most recent runs, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EvaluationRun'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /evaluation-runs/{runId}:
+    get:
+      summary: Get an evaluation run with immutable case evidence
+      operationId: getEvaluationRun
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Evaluation aggregate and per-case evidence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationDetail'
+        '404':
+          $ref: '#/components/responses/Problem'
   /model-connections:
     get:
       summary: List model connections without exposing credentials
@@ -1151,6 +1383,154 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+  /agent-roles:
+    get:
+      summary: List the fixed seven Agent roles
+      operationId: listAgentRoles
+      responses:
+        '200':
+          description: Version-independent role catalog.
+          content:
+            application/json:
+              schema:
+                type: array
+                minItems: 7
+                maxItems: 7
+                items: { $ref: '#/components/schemas/AgentRoleDefinition' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /agent-mounts:
+    get:
+      summary: Get the latest immutable Agent mount head for one scope
+      operationId: getAgentMountScope
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/AgentMountScope' }
+        - name: scopeId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Scope configuration. The response ETag protects version appends.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentScopeConfiguration' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /agent-mounts/effective:
+    get:
+      summary: Resolve Global to Scene to SubScene Agent configuration inheritance
+      operationId: resolveAgentMounts
+      parameters:
+        - name: sceneId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: subSceneId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Seven effective configurations including field sources and lineage hashes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EffectiveAgentConfiguration' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /agent-mounts/versions:
+    post:
+      summary: Append one immutable Agent mount version
+      operationId: appendAgentMountVersion
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppendAgentMountRequest' }
+      responses:
+        '200':
+          description: Updated scope configuration.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentScopeConfiguration' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '428': { $ref: '#/components/responses/Problem' }
+  /agent-configuration-catalog:
+    get:
+      summary: List safe model and Skill version metadata available for Agent mounts
+      operationId: getAgentConfigurationCatalog
+      responses:
+        '200':
+          description: Catalog never contains model endpoints or credentials.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentConfigurationCatalog' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /configuration-imports/previews:
+    post:
+      summary: Validate and freeze an Agent configuration import Diff
+      operationId: previewConfigurationImport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfigurationImportRequest' }
+      responses:
+        '200':
+          description: Immutable preview. Use manifestHash as If-Match when applying.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigurationImportPreview' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /configuration-imports/{importId}:
+    get:
+      summary: Get an immutable configuration import preview
+      operationId: getConfigurationImport
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Frozen manifest and Diff.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigurationImportPreview' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /configuration-imports/{importId}/apply:
+    post:
+      summary: Transactionally append all versions from a frozen configuration import
+      operationId: applyConfigurationImport
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Updated scope configuration.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentScopeConfiguration' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '428': { $ref: '#/components/responses/Problem' }
   /audit-events:
     get:
       summary: List redacted audit events
@@ -1447,7 +1827,12 @@ components:
     CreateUploadIntentRequest:
       type: object
       additionalProperties: false
-      required: [fileName, sizeBytes, mediaType, sha256, roundId, partition, shareScope]
+      required: [fileName, sizeBytes, mediaType, sha256, partition, shareScope]
+      oneOf:
+        - required: [roundId]
+          not: { required: [explorationSessionId] }
+        - required: [explorationSessionId]
+          not: { required: [roundId] }
       properties:
         fileName: { type: string, minLength: 1, maxLength: 255 }
         sizeBytes: { type: integer, format: int64, minimum: 1, maximum: 209715200 }
@@ -1460,6 +1845,10 @@ components:
             - text/plain
         sha256: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
         roundId: { type: string, format: uuid }
+        explorationSessionId:
+          type: string
+          format: uuid
+          description: Stages a SOURCE material without a Round binding; exactly one scope id is required.
         subSceneIds:
           type: array
           uniqueItems: true
@@ -1467,6 +1856,117 @@ components:
         partition: { $ref: '#/components/schemas/MaterialPartition' }
         shareScope: { $ref: '#/components/schemas/MaterialShareScope' }
         regulatorySource: { type: boolean, default: false }
+    ExplorationSession:
+      type: object
+      additionalProperties: false
+      required: [id, title, status, exploreJobId, version, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        status: { type: string, enum: [DRAFT, ANALYZING, READY, ACCEPTED, FAILED, CANCELLED] }
+        exploreJobId: { type: [string, 'null'], format: uuid }
+        version: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ExplorationMaterial:
+      type: object
+      additionalProperties: false
+      required: [id, fileName, format, sizeBytes, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        fileName: { type: string }
+        format: { type: string, enum: [PDF, DOCX, XLSX, TXT] }
+        sizeBytes: { type: integer, format: int64 }
+        status: { $ref: '#/components/schemas/MaterialStatus' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ExplorationCandidate:
+      type: object
+      additionalProperties: false
+      required: [id, rank, sceneName, sceneDescription, subSceneName, subSceneDescription, rationale,
+        valueLevel, estimatedRuleCount, estimatedFlowCount, tags, materialIds]
+      properties:
+        id: { type: string, format: uuid }
+        rank: { type: integer, minimum: 1, maximum: 5 }
+        sceneName: { type: string }
+        sceneDescription: { type: string }
+        subSceneName: { type: string }
+        subSceneDescription: { type: string }
+        rationale: { type: string }
+        valueLevel: { type: string, enum: [HIGH, MEDIUM, LOW] }
+        estimatedRuleCount: { type: integer, minimum: 0 }
+        estimatedFlowCount: { type: integer, minimum: 0 }
+        tags: { type: array, maxItems: 8, items: { type: string } }
+        materialIds: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
+    ExplorationAcceptance:
+      type: object
+      additionalProperties: false
+      required: [candidateId, sceneId, subSceneId, roundId, acceptedAt]
+      properties:
+        candidateId: { type: string, format: uuid }
+        sceneId: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        roundId: { type: string, format: uuid }
+        acceptedAt: { type: string, format: date-time }
+    ExplorationDetail:
+      type: object
+      additionalProperties: false
+      required: [session, etag, materials, candidates, acceptance]
+      properties:
+        session: { $ref: '#/components/schemas/ExplorationSession' }
+        etag: { type: string, pattern: '^[a-f0-9]{64}$' }
+        materials: { type: array, items: { $ref: '#/components/schemas/ExplorationMaterial' } }
+        candidates: { type: array, items: { $ref: '#/components/schemas/ExplorationCandidate' } }
+        acceptance: { anyOf: [{ $ref: '#/components/schemas/ExplorationAcceptance' }, { type: 'null' }] }
+    ExplorationAcceptanceRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        sceneName: { type: string, maxLength: 200 }
+        sceneDescription: { type: string, maxLength: 10000 }
+        subSceneName: { type: string, maxLength: 200 }
+        subSceneDescription: { type: string, maxLength: 10000 }
+    ExplorationAcceptanceResult:
+      type: object
+      additionalProperties: false
+      required: [sceneId, subSceneId, roundId, reusedMaterialIds]
+      properties:
+        sceneId: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        roundId: { type: string, format: uuid }
+        reusedMaterialIds: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
+    SearchResult:
+      type: object
+      additionalProperties: false
+      required: [type, sceneId, subSceneId, resourceId, title, excerpt]
+      properties:
+        type: { type: string, enum: [SCENE, RULE, SOURCE] }
+        sceneId: { type: string, format: uuid }
+        subSceneId: { type: [string, 'null'], format: uuid }
+        resourceId: { type: string, format: uuid }
+        title: { type: string }
+        excerpt: { type: string, maxLength: 240 }
+    Notification:
+      type: object
+      additionalProperties: false
+      required: [id, type, title, message, resourceType, resourceId, createdAt, readAt, read]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        title: { type: string }
+        message: { type: string }
+        resourceType: { type: string }
+        resourceId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        readAt: { type: [string, 'null'], format: date-time }
+        read: { type: boolean }
+    NotificationInbox:
+      type: object
+      additionalProperties: false
+      required: [unreadCount, items]
+      properties:
+        unreadCount: { type: integer, minimum: 0 }
+        items: { type: array, items: { $ref: '#/components/schemas/Notification' } }
     UploadIntent:
       type: object
       additionalProperties: false
@@ -1614,11 +2114,173 @@ components:
     StartExtractionRequest:
       type: object
       additionalProperties: false
-      required: [roundId, modelConfigVersionId, skillVersionId]
+      required: [roundId]
       properties:
         roundId: { type: string, format: uuid }
-        modelConfigVersionId: { type: string, format: uuid }
-        skillVersionId: { type: string, format: uuid }
+        modelConfigVersionId:
+          type: string
+          format: uuid
+          description: Optional compatibility override; omit together with skillVersionId to use the effective KNOWLEDGE_EXTRACTOR mount.
+        skillVersionId:
+          type: string
+          format: uuid
+          description: Optional compatibility override; must be present iff modelConfigVersionId is present.
+    AgentRole:
+      type: string
+      enum: [SCENE_EXPLORER, KNOWLEDGE_EXTRACTOR, ALIGNMENT_REVIEWER, RULE_CATALOG_GENERATOR,
+        DECISION_FLOW_GENERATOR, SKILL_PACKAGER, QA_EVALUATOR]
+    AgentMountScope:
+      type: string
+      enum: [GLOBAL, SCENE, SUB_SCENE]
+    AgentRoleDefinition:
+      type: object
+      additionalProperties: false
+      required: [role, displayName, stage, description]
+      properties:
+        role: { $ref: '#/components/schemas/AgentRole' }
+        displayName: { type: string }
+        stage: { type: string, enum: [环节一, 环节二, 环节三] }
+        description: { type: string }
+    AgentMountDraft:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role: { $ref: '#/components/schemas/AgentRole' }
+        enabled: { type: [boolean, 'null'] }
+        modelConfigVersionId: { type: [string, 'null'], format: uuid }
+        skillVersionId: { type: [string, 'null'], format: uuid }
+        options:
+          type: [object, 'null']
+          maxProperties: 64
+          additionalProperties: true
+          description: Non-secret, non-executable runtime options. Null means inherit.
+    AppendAgentMountRequest:
+      allOf:
+        - $ref: '#/components/schemas/AgentMountDraft'
+        - type: object
+          required: [scope]
+          properties:
+            scope: { $ref: '#/components/schemas/AgentMountScope' }
+            scopeId: { type: [string, 'null'], format: uuid }
+    AgentMountVersion:
+      type: object
+      additionalProperties: false
+      required: [id, role, scope, version, configHash, createdBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        role: { $ref: '#/components/schemas/AgentRole' }
+        scope: { $ref: '#/components/schemas/AgentMountScope' }
+        scopeId: { type: [string, 'null'], format: uuid }
+        version: { type: integer, minimum: 1 }
+        templateVersionId: { type: [string, 'null'], format: uuid }
+        enabled: { type: [boolean, 'null'] }
+        modelConfigVersionId: { type: [string, 'null'], format: uuid }
+        skillVersionId: { type: [string, 'null'], format: uuid }
+        optionsJson: { type: [string, 'null'] }
+        configHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    AgentScopeConfiguration:
+      type: object
+      additionalProperties: false
+      required: [scope, etag, mounts]
+      properties:
+        scope: { $ref: '#/components/schemas/AgentMountScope' }
+        scopeId: { type: [string, 'null'], format: uuid }
+        sceneId: { type: [string, 'null'], format: uuid }
+        etag: { type: string, pattern: '^[0-9a-f]{64}$' }
+        mounts:
+          type: array
+          items: { $ref: '#/components/schemas/AgentMountVersion' }
+    EffectiveAgentConfiguration:
+      type: object
+      additionalProperties: false
+      required: [role, displayName, stage, enabled, configured, modelConfigVersionId, skillVersionId,
+        optionsJson, effectiveHash, effectiveMountVersionId, lineage]
+      properties:
+        role: { $ref: '#/components/schemas/AgentRole' }
+        displayName: { type: string }
+        stage: { type: string }
+        enabled: { type: boolean }
+        configured: { type: boolean }
+        modelConfigVersionId: { type: [string, 'null'], format: uuid }
+        skillVersionId: { type: [string, 'null'], format: uuid }
+        optionsJson: { type: string }
+        effectiveHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        effectiveMountVersionId: { type: [string, 'null'], format: uuid }
+        enabledSource: { oneOf: [{ $ref: '#/components/schemas/AgentMountScope' }, { type: 'null' }] }
+        modelSource: { oneOf: [{ $ref: '#/components/schemas/AgentMountScope' }, { type: 'null' }] }
+        skillSource: { oneOf: [{ $ref: '#/components/schemas/AgentMountScope' }, { type: 'null' }] }
+        optionsSource: { type: [string, 'null'] }
+        lineage:
+          type: array
+          items: { $ref: '#/components/schemas/AgentMountVersion' }
+    AgentConfigurationCatalog:
+      type: object
+      additionalProperties: false
+      required: [models, skills]
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [versionId, connectionId, connectionName, provider, version, modelId, temperature, maxOutputTokens]
+            properties:
+              versionId: { type: string, format: uuid }
+              connectionId: { type: string, format: uuid }
+              connectionName: { type: string }
+              provider: { $ref: '#/components/schemas/ModelProvider' }
+              version: { type: integer, minimum: 1 }
+              modelId: { type: string }
+              temperature: { type: number }
+              maxOutputTokens: { type: integer }
+        skills:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [versionId, skillId, name, kind, version, packageHash]
+            properties:
+              versionId: { type: string, format: uuid }
+              skillId: { type: string, format: uuid }
+              name: { type: string }
+              kind: { $ref: '#/components/schemas/SkillKind' }
+              sceneId: { type: [string, 'null'], format: uuid }
+              version: { type: integer, minimum: 1 }
+              packageHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+    ConfigurationImportRequest:
+      type: object
+      additionalProperties: false
+      required: [scope, roles]
+      properties:
+        scope: { $ref: '#/components/schemas/AgentMountScope' }
+        scopeId: { type: [string, 'null'], format: uuid }
+        roles:
+          type: array
+          minItems: 1
+          maxItems: 7
+          items: { $ref: '#/components/schemas/AgentMountDraft' }
+    ConfigurationImportPreview:
+      type: object
+      additionalProperties: false
+      required: [id, schemaVersion, scope, baseEtag, manifestJson, manifestHash, diffJson, createdBy, createdAt, applied]
+      properties:
+        id: { type: string, format: uuid }
+        schemaVersion: { type: string, const: '1.0' }
+        scope: { $ref: '#/components/schemas/AgentMountScope' }
+        scopeId: { type: [string, 'null'], format: uuid }
+        sceneId: { type: [string, 'null'], format: uuid }
+        baseEtag: { type: string, pattern: '^[0-9a-f]{64}$' }
+        manifestJson: { type: string }
+        manifestHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        diffJson: { type: string }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        appliedBy: { type: [string, 'null'], format: uuid }
+        appliedAt: { type: [string, 'null'], format: date-time }
+        applied: { type: boolean }
     SkillKind:
       type: string
       enum: [TEMPLATE, INSTANCE]
@@ -2074,7 +2736,7 @@ components:
           type: array
           items:
             type: object
-            required: [subSceneId, status]
+            required: [subSceneId, status, assets, agentConfigurations]
             properties:
               subSceneId: { type: string, format: uuid }
               status: { type: string, enum: [SELECTED, CARRIED_FORWARD, MISSING] }
@@ -2095,7 +2757,109 @@ components:
                     documentRevisionId: { type: string, format: uuid }
                     objectKey: { type: string }
                     checksum: { type: string }
+              agentConfigurations:
+                type: array
+                description: Immutable seven-role configuration snapshot; carried-forward sub-scenes retain the prior release snapshot.
+                items:
+                  type: object
+                  required: [role, enabled, effectiveHash, lineage]
+                  properties:
+                    role: { $ref: '#/components/schemas/AgentRole' }
+                    enabled: { type: boolean }
+                    effectiveHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+                    effectiveMountVersionId: { type: [string, 'null'], format: uuid }
+                    model: { type: [object, 'null'] }
+                    skill: { type: [object, 'null'] }
+                    lineage:
+                      type: array
+                      items:
+                        type: object
+                        required: [mountVersionId, scope, version, configHash]
+                        properties:
+                          mountVersionId: { type: string, format: uuid }
+                          scope: { $ref: '#/components/schemas/AgentMountScope' }
+                          version: { type: integer, minimum: 1 }
+                          templateVersionId: { type: [string, 'null'], format: uuid }
+                          configHash: { type: string, pattern: '^[0-9a-f]{64}$' }
         sha256: { type: string }
+    CreateEvaluationRequest:
+      type: object
+      additionalProperties: false
+      required: [roundId]
+      properties:
+        roundId: { type: string, format: uuid }
+    EvaluationAccepted:
+      type: object
+      additionalProperties: false
+      required: [evaluationRunId, jobId, status, statusUrl, eventsUrl]
+      properties:
+        evaluationRunId: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED] }
+        statusUrl: { type: string }
+        eventsUrl: { type: string }
+    EvaluationRun:
+      type: object
+      additionalProperties: false
+      required: [id, releaseId, subSceneId, roundId, documentRevisionId, evaluationAssetId,
+        skillAssetId, modelConfigVersionId, skillVersionId, jobId, caseSetHash, status,
+        totalCases, passedCases, failedCases, errorCases, failureCode, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        releaseId: { type: string, format: uuid }
+        subSceneId: { type: string, format: uuid }
+        roundId: { type: string, format: uuid }
+        documentRevisionId: { type: string, format: uuid }
+        evaluationAssetId: { type: string, format: uuid }
+        skillAssetId: { type: string, format: uuid }
+        modelConfigVersionId: { type: string, format: uuid }
+        skillVersionId: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        caseSetHash:
+          type: string
+          pattern: '^(?:|[0-9a-f]{64})$'
+        status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED] }
+        totalCases: { type: integer, minimum: 0 }
+        passedCases: { type: integer, minimum: 0 }
+        failedCases: { type: integer, minimum: 0 }
+        errorCases: { type: integer, minimum: 0 }
+        accuracy: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        failureCode: { type: string, maxLength: 100 }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+        updatedAt: { type: string, format: date-time }
+    EvaluationCase:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, caseKey, input, expected, materialId, chunkId, sourceRefCode,
+        tags, prediction, outcome, errorCode, latencyMillis]
+      properties:
+        id: { type: string, format: uuid }
+        ordinal: { type: integer, minimum: 0 }
+        caseKey: { type: string, minLength: 1, maxLength: 120 }
+        input: { type: string, minLength: 1, maxLength: 20000 }
+        expected: { type: string, minLength: 1, maxLength: 500 }
+        materialId: { type: string, format: uuid }
+        chunkId: { type: string, format: uuid }
+        sourceRefCode: { type: string }
+        tags:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 80 }
+        prediction: { type: [string, 'null'], maxLength: 500 }
+        outcome: { type: [string, 'null'], enum: [PASSED, FAILED, ERROR, null] }
+        errorCode: { type: [string, 'null'], maxLength: 100 }
+        latencyMillis: { type: [integer, 'null'], minimum: 0, maximum: 3600000 }
+    EvaluationDetail:
+      type: object
+      additionalProperties: false
+      required: [run, cases]
+      properties:
+        run: { $ref: '#/components/schemas/EvaluationRun' }
+        cases:
+          type: array
+          items: { $ref: '#/components/schemas/EvaluationCase' }
     ModelProvider:
       type: string
       enum: [OPENAI_COMPATIBLE, DASHSCOPE]

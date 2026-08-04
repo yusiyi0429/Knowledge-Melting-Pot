@@ -120,8 +120,8 @@ readiness=$(docker exec "$api_id" wget -qO- \
   http://localhost:8080/actuator/health/readiness | jq -er .status)
 [ "$readiness" = UP ]
 migrations=$(psql_query \
-  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11');")
-[ "$migrations" = '1:true,2:true,3:true,4:true,5:true,6:true,7:true,8:true,9:true,10:true,11:true' ]
+  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11','12','13');")
+[ "$migrations" = '1:true,2:true,3:true,4:true,5:true,6:true,7:true,8:true,9:true,10:true,11:true,12:true,13:true' ]
 
 verify_stage=secure-session-login
 csrf_json=$(curl -fsS -D "$csrf_headers" -c "$cookie_jar" \

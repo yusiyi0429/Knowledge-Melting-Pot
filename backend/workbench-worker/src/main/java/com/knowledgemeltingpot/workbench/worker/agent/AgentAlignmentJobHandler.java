@@ -65,7 +65,8 @@ public class AgentAlignmentJobHandler implements JobHandler {
                 return JobHandlingResult.failure("CANCELLED", "Cancellation was requested");
             }
             var generated = workflow.generate(new KnowledgeAlignmentWorkflowPort.AlignmentRequest(
-                    leasedJob.job().id(), payload.action(), base, evidence));
+                    leasedJob.job().id(), payload.modelConfigVersionId(), payload.skillVersionId(),
+                    payload.action(), base, evidence));
             KnowledgeIr replacement = validator.validate(validator.assignStableRuleIds(generated.replacement()));
             context.progress(80, "alignment-proposal-validating");
             AlignmentProposalView proposal = alignmentService.createProposal(new AlignmentProposalDraft(
@@ -113,7 +114,8 @@ public class AgentAlignmentJobHandler implements JobHandler {
     }
 
     private record Payload(UUID documentId, UUID baseRevisionId, String baseEtag,
-            AlignmentAction action, List<UUID> regulatoryMaterialIds) {
+            AlignmentAction action, List<UUID> regulatoryMaterialIds, UUID modelConfigVersionId,
+            UUID skillVersionId, UUID roleConfigVersionId, String roleConfigHash) {
         private Payload {
             regulatoryMaterialIds = regulatoryMaterialIds == null ? List.of() : List.copyOf(regulatoryMaterialIds);
         }

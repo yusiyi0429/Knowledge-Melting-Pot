@@ -1,5 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v1/notifications?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ unreadCount: 0, items: [] }),
+    });
+  });
+});
+
 test("walks through the auditable extraction and partial-release prototype", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
@@ -125,7 +135,7 @@ test("walks through the auditable extraction and partial-release prototype", asy
 
 test("serves application deep links and governance routes", async ({ page }) => {
   const routes = [
-    ["/agents", "七种角色，一条显式工作流"],
+    ["/agents", "七种角色，一条可追溯配置链"],
     ["/skills", "模板是起点，版本才是交付物"],
     ["/models", "模型连接与生成参数分开版本化"],
     ["/users", "用户与可组合角色"],
@@ -136,6 +146,167 @@ test("serves application deep links and governance routes", async ({ page }) => 
     await page.goto(path);
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
+});
+
+test("explores staged evidence, searches globally, and reads task notifications", async ({ page }) => {
+  const explorationId = "3f7a1c2e-0000-4000-8000-000000000051";
+  const candidateId = "3f7a1c2e-0000-4000-8000-000000000052";
+  const materialId = "3f7a1c2e-0000-4000-8000-000000000053";
+  const etag = `"${"a".repeat(64)}"`;
+  let notificationRead = false;
+  let acceptanceHeaders: { ifMatch: string | null; csrf: string | null } | null = null;
+
+  await page.unroute("**/api/v1/notifications?*");
+  await page.route("**/api/v1/auth/csrf", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "exploration-csrf" }) });
+  });
+  await page.route("**/api/v1/auth/me", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "operator-1", username: "operator", displayName: "运营", enabled: true, roles: ["OPERATOR"], mustChangePassword: false }) });
+  });
+  await page.route("**/api/v1/notifications?*", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      unreadCount: notificationRead ? 0 : 1,
+      items: [{ id: "notification-1", type: "JOB_SUCCEEDED", title: "场景探索已完成", message: "候选场景已就绪。", resourceType: "JOB", resourceId: "job-1", createdAt: "2026-08-04T08:00:00Z", readAt: notificationRead ? "2026-08-04T08:01:00Z" : null, read: notificationRead }],
+    }) });
+  });
+  await page.route("**/api/v1/notifications/notification-1/read", async (route) => {
+    notificationRead = true;
+    await route.fulfill({ status: 204 });
+  });
+  await page.route("**/api/v1/search?*", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{ type: "RULE", sceneId: "scene-existing", subSceneId: "sub-existing", resourceId: "rule-1", title: "逾期贷款分类规则", excerpt: "逾期超过 90 天时进入次级类。" }]) });
+  });
+
+  const session = { id: explorationId, title: "贷款风险分类探索", status: "READY", exploreJobId: "job-1", version: 2, createdAt: "2026-08-04T07:00:00Z", updatedAt: "2026-08-04T08:00:00Z" };
+  await page.route("**/api/v1/explorations", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([session]) });
+  });
+  await page.route(`**/api/v1/explorations/${explorationId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      session,
+      etag,
+      materials: [{ id: materialId, fileName: "贷款分类制度.txt", format: "TXT", sizeBytes: 2048, status: "READY", createdAt: "2026-08-04T07:00:00Z", updatedAt: "2026-08-04T07:05:00Z" }],
+      candidates: [{ id: candidateId, rank: 1, sceneName: "贷款风险分类", sceneDescription: "分类制度知识场景", subSceneName: "逾期分类下迁", subSceneDescription: "基于逾期天数判断分类", rationale: "素材包含完整阈值、例外和来源。", valueLevel: "HIGH", estimatedRuleCount: 8, estimatedFlowCount: 2, tags: ["信贷", "分类"], materialIds: [materialId] }],
+      acceptance: null,
+    }) });
+  });
+  await page.route(`**/api/v1/explorations/${explorationId}/candidates/${candidateId}/accept`, async (route) => {
+    acceptanceHeaders = { ifMatch: route.request().headers()["if-match"] ?? null, csrf: route.request().headers()["x-xsrf-token"] ?? null };
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ sceneId: "scene-accepted", subSceneId: "sub-accepted", roundId: "round-accepted", reusedMaterialIds: [materialId] }) });
+  });
+
+  await page.goto("/explore");
+  await expect(page.getByRole("heading", { name: "从证据边界中发现候选场景" })).toBeVisible();
+  await expect(page.getByText("贷款分类制度.txt")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "贷款风险分类", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "通知，1 条未读" }).click();
+  await page.getByRole("button", { name: /场景探索已完成/ }).click();
+  await expect.poll(() => notificationRead).toBe(true);
+
+  await page.getByRole("searchbox", { name: "搜索" }).fill("逾期贷款");
+  await expect(page.getByText("逾期贷款分类规则")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "接受并进入萃取" }).click();
+  await expect(page).toHaveURL(/\/scenes\/scene-accepted$/);
+  expect(acceptanceHeaders).toEqual({ ifMatch: etag, csrf: "exploration-csrf" });
+});
+
+test("governs agent mounts with ETag writes and transactional import", async ({ page }) => {
+  const sceneId = "3f7a1c2e-0000-4000-8000-000000000041";
+  const subSceneId = "3f7a1c2e-0000-4000-8000-000000000042";
+  const modelVersionId = "3f7a1c2e-0000-4000-8000-000000000043";
+  const skillVersionId = "3f7a1c2e-0000-4000-8000-000000000044";
+  const initialEtag = "a".repeat(64);
+  const nextEtag = "b".repeat(64);
+  const manifestHash = "c".repeat(64);
+  let mountWrite: { ifMatch: string | null; csrf: string | null; body: Record<string, unknown> } | null = null;
+  let importApplyIfMatch: string | null = null;
+  let scope = {
+    scope: "SCENE", scopeId: sceneId, sceneId, etag: initialEtag, mounts: [],
+  };
+
+  await page.route("**/api/v1/auth/csrf", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "agent-csrf" }) });
+  });
+  await page.route("**/api/v1/auth/me", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "admin-1", username: "admin", displayName: "管理员", enabled: true, roles: ["ADMIN"], mustChangePassword: false }) });
+  });
+  await page.route("**/api/v1/agent-roles", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{ role: "KNOWLEDGE_EXTRACTOR", displayName: "知识萃取智能体", stage: "环节二", description: "从可信素材生成带来源的 KnowledgeIR" }]) });
+  });
+  await page.route("**/api/v1/agent-configuration-catalog", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      models: [{ versionId: modelVersionId, connectionId: "connection-1", connectionName: "受控模型", provider: "DASHSCOPE", version: 2, modelId: "qwen-plus", temperature: 0.2, maxOutputTokens: 4096 }],
+      skills: [{ versionId: skillVersionId, skillId: "skill-1", name: "结构化萃取", kind: "TEMPLATE", sceneId: null, version: 3, packageHash: "d".repeat(64) }],
+    }) });
+  });
+  await page.route("**/api/v1/scenes?page=0&size=100", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ id: sceneId, name: "贷款分类", description: "", createdAt: "2026-08-04T00:00:00Z", updatedAt: "2026-08-04T00:00:00Z" }], page: 0, size: 100, total: 1 }) });
+  });
+  await page.route(`**/api/v1/scenes/${sceneId}/subscenes`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{ id: subSceneId, sceneId, name: "逾期分类", description: "", createdAt: "2026-08-04T00:00:00Z", updatedAt: "2026-08-04T00:00:00Z" }]) });
+  });
+  await page.route("**/api/v1/agent-mounts?*", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(scope) });
+  });
+  await page.route("**/api/v1/agent-mounts/effective?*", async (route) => {
+    const mount = scope.mounts[0] as Record<string, unknown> | undefined;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{
+      role: "KNOWLEDGE_EXTRACTOR", displayName: "知识萃取智能体", stage: "环节二",
+      enabled: Boolean(mount), configured: Boolean(mount),
+      modelConfigVersionId: mount ? modelVersionId : null, skillVersionId: mount ? skillVersionId : null,
+      optionsJson: mount ? '{"strategy":"balanced"}' : "{}", effectiveHash: mount ? "e".repeat(64) : "f".repeat(64),
+      effectiveMountVersionId: mount?.id ?? null, enabledSource: mount ? "SCENE" : null,
+      modelSource: mount ? "SCENE" : null, skillSource: mount ? "SCENE" : null,
+      optionsSource: mount ? "SCENE" : "TEMPLATE", lineage: mount ? [mount] : [],
+    }]) });
+  });
+  await page.route("**/api/v1/agent-mounts/versions", async (route) => {
+    mountWrite = {
+      ifMatch: route.request().headers()["if-match"] ?? null,
+      csrf: route.request().headers()["x-xsrf-token"] ?? null,
+      body: route.request().postDataJSON() as Record<string, unknown>,
+    };
+    scope = { ...scope, etag: nextEtag, mounts: [{
+      id: "mount-1", role: "KNOWLEDGE_EXTRACTOR", scope: "SCENE", scopeId: sceneId, version: 1,
+      templateVersionId: "template-1", enabled: true, modelConfigVersionId: modelVersionId,
+      skillVersionId, optionsJson: '{"strategy":"balanced"}', configHash: "e".repeat(64),
+      createdBy: "admin-1", createdAt: "2026-08-04T00:00:00Z",
+    }] };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(scope) });
+  });
+  await page.route("**/api/v1/configuration-imports/previews", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      id: "import-1", schemaVersion: "1.0", scope: "SCENE", scopeId: sceneId, sceneId,
+      baseEtag: nextEtag, manifestJson: "{}", manifestHash,
+      diffJson: '[{"role":"KNOWLEDGE_EXTRACTOR","changedFields":["options"]}]',
+      createdBy: "admin-1", createdAt: "2026-08-04T00:00:00Z", appliedBy: null, appliedAt: null, applied: false,
+    }) });
+  });
+  await page.route("**/api/v1/configuration-imports/import-1/apply", async (route) => {
+    importApplyIfMatch = route.request().headers()["if-match"] ?? null;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(scope) });
+  });
+
+  await page.goto("/agents");
+  await expect(page.getByRole("heading", { name: "知识萃取智能体" })).toBeVisible();
+  await page.getByLabel("本层启停").selectOption("true");
+  await page.getByLabel("本层模型版本").selectOption(modelVersionId);
+  await page.getByLabel("本层 Skill 版本").selectOption(skillVersionId);
+  await page.getByLabel("本层运行参数（JSON 对象，留空继承）").fill('{"strategy":"balanced"}');
+  await page.getByRole("button", { name: "追加配置版本" }).click();
+  await expect(page.getByRole("status")).toContainText("已追加新版本");
+  expect(mountWrite).toMatchObject({ ifMatch: initialEtag, csrf: "agent-csrf", body: { scope: "SCENE", scopeId: sceneId, role: "KNOWLEDGE_EXTRACTOR", enabled: true, modelConfigVersionId: modelVersionId, skillVersionId } });
+
+  await page.getByRole("button", { name: "导入配置" }).click();
+  await page.locator(".agent-import-panel textarea").fill('[{"role":"KNOWLEDGE_EXTRACTOR","options":{"strategy":"strict"}}]');
+  await page.getByRole("button", { name: "生成 Diff 预览" }).click();
+  await expect(page.getByText(/校验通过/)).toBeVisible();
+  await page.getByRole("button", { name: "确认事务应用" }).click();
+  await expect(page.getByRole("status")).toContainText("配置导入已作为一组不可变版本应用");
+  expect(importApplyIfMatch).toBe(manifestHash);
 });
 
 test("online login sends CSRF metadata and routes first-login users to password change", async ({ page }) => {
@@ -1099,7 +1270,7 @@ test("aborts the upload intent when a part upload fails", async ({ page }) => {
   await page.getByRole("button", { name: "开始上传" }).click();
 
   await expect(page.getByRole("alert")).toContainText("第 2/2 部分上传失败（HTTP 500）");
-  expect(abortUrls).toHaveLength(1);
+  await expect.poll(() => abortUrls.length).toBe(1);
   await expect(page.getByText("上传完成，校验任务已排队")).toHaveCount(0);
   await page.getByRole("button", { name: "关闭", exact: true }).last().click();
   await expect(page.getByRole("dialog", { name: "上传素材" })).toHaveCount(0);
@@ -1352,6 +1523,9 @@ test("generates assets, tracks the job, and publishes in step 3", async ({ page 
   await page.route("**/api/v1/releases/rel-1/manifest", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ schemaVersion: "1.0", releaseId: "rel-1", tag: "v1.0" }) });
   });
+  await page.route("**/api/v1/releases/*/subscenes/*/evaluation-runs", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+  });
 
   await page.goto(`/scenes/${sceneId}`);
   await page.getByRole("button", { name: /知识生成及发布/ }).click();
@@ -1359,6 +1533,9 @@ test("generates assets, tracks the job, and publishes in step 3", async ({ page 
   // Real asset list: five types, BLOCKED evaluation set shows its prerequisite.
   await expect(page.getByText("前置缺失", { exact: true })).toBeVisible();
   await expect(page.getByText("评测集需要至少一份 READY 的留出（HOLDOUT）素材；缺少时会阻断发布预检。")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "真实留出集评测" })).toBeVisible();
+  await expect(page.getByText("当前轮次没有 READY 的 LABELED_HOLDOUT 素材，不能运行或显示评测指标。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "运行评测" })).toBeDisabled();
   await expect(page.getByText("下载 Bundle")).toHaveCount(0);
 
   // Generate all: POST carries revision + types, job is polled to terminal state, assets refresh.

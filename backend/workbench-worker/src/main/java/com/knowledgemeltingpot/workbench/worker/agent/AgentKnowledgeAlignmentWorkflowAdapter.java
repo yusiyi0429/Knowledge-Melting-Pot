@@ -6,7 +6,6 @@ import com.knowledgemeltingpot.workbench.agent.AgentExecutionMode;
 import com.knowledgemeltingpot.workbench.agent.AgentExecutionRequest;
 import com.knowledgemeltingpot.workbench.agent.AgentExecutionResult;
 import com.knowledgemeltingpot.workbench.agent.AgentExecutionStatus;
-import com.knowledgemeltingpot.workbench.agent.KnowledgeExtractionPort;
 import com.knowledgemeltingpot.workbench.application.port.KnowledgeAlignmentWorkflowPort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -14,10 +13,10 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnProperty(name = "workbench.agent.enabled", havingValue = "true")
 public class AgentKnowledgeAlignmentWorkflowAdapter implements KnowledgeAlignmentWorkflowPort {
-    private final KnowledgeExtractionPort agent;
+    private final VersionedAgentExecutor agent;
     private final ObjectMapper objectMapper;
 
-    public AgentKnowledgeAlignmentWorkflowAdapter(KnowledgeExtractionPort agent, ObjectMapper objectMapper) {
+    public AgentKnowledgeAlignmentWorkflowAdapter(VersionedAgentExecutor agent, ObjectMapper objectMapper) {
         this.agent = agent;
         this.objectMapper = objectMapper;
     }
@@ -36,9 +35,9 @@ public class AgentKnowledgeAlignmentWorkflowAdapter implements KnowledgeAlignmen
                 可用监管证据：
                 %s
                 """.formatted(request.action(), toJson(request.base()), toJson(request.evidence()));
-        AgentExecutionResult result = agent.stream(new AgentExecutionRequest(
-                request.jobId().toString() + ":alignment", "system", prompt, AgentExecutionMode.WORKFLOW),
-                ignored -> { });
+        AgentExecutionResult result = agent.stream(request.modelConfigVersionId(), request.skillVersionId(),
+                new AgentExecutionRequest(request.jobId().toString() + ":alignment", "system", prompt,
+                        AgentExecutionMode.WORKFLOW), ignored -> { });
         if (result.status() != AgentExecutionStatus.COMPLETED) {
             throw new AgentKnowledgeExtractionWorkflowAdapter.WorkflowGenerationException(
                     result.failureCode().isBlank() ? result.status().name() : result.failureCode());

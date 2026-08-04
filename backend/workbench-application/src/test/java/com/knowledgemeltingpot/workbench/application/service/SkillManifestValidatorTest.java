@@ -22,6 +22,35 @@ class SkillManifestValidatorTest {
     }
 
     @Test
+    void acceptsOnlyTheBoundedDeclarativeSandboxProgram() {
+        String manifest = """
+                {"schemaVersion":"1.0","executionMode":"SANDBOX_V1","name":"loan-classifier",
+                 "program":{"kind":"CLASSIFY_CONTAINS","rules":[
+                   {"containsAny":["逾期120","严重减值"],"prediction":"次级"},
+                   {"containsAny":["逾期30"],"prediction":"关注"}
+                 ],"defaultPrediction":"正常"}}
+                """;
+
+        String normalized = validator.validate(manifest);
+
+        assertThat(normalized).contains("\"executionMode\":\"SANDBOX_V1\"",
+                "\"kind\":\"CLASSIFY_CONTAINS\"");
+    }
+
+    @Test
+    void sandboxManifestRejectsCodeNetworkAndUnboundedProgramShapes() {
+        for (String manifest : new String[]{
+                "{\"executionMode\":\"SANDBOX_V1\",\"script\":\"print(1)\"}",
+                "{\"executionMode\":\"SANDBOX_V1\",\"program\":{\"kind\":\"SHELL\",\"rules\":[],\"defaultPrediction\":\"x\"}}",
+                "{\"executionMode\":\"SANDBOX_V1\",\"program\":{\"kind\":\"CLASSIFY_CONTAINS\",\"rules\":[{\"containsAny\":[\"x\"],\"prediction\":\"y\",\"url\":\"http://example.com\"}],\"defaultPrediction\":\"z\"}}",
+                "{\"executionMode\":\"SANDBOX_V1\",\"program\":{\"kind\":\"CLASSIFY_CONTAINS\",\"rules\":[],\"defaultPrediction\":\"z\"}}",
+        }) {
+            assertThatThrownBy(() -> validator.validate(manifest))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
     void rejectsNonResourceOnlyExecutionMode() {
         assertThatThrownBy(() -> validator.validate(
                 "{\"executionMode\":\"EXECUTE\",\"script\":\"rm -rf\"}"))

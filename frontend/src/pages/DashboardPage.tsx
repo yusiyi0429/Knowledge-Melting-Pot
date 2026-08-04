@@ -179,11 +179,14 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
         eyebrow="工作台 / 场景库"
         title="知识正在形成可追溯的资产"
         description="从原始素材到发布快照，每一次萃取、人工确认和生成结果都保留版本关系。"
-        actions={
+        actions={<>
+          <Button className="button--quiet" onClick={() => onNavigate("/explore")}>
+            <Glyph name="search" />场景探索
+          </Button>
           <Button className="button--primary" onClick={openDialog}>
             <Glyph name="plus" />新建萃取场景
           </Button>
-        }
+        </>}
       />
 
       {loadError ? (

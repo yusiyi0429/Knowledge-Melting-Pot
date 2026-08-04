@@ -53,7 +53,8 @@ public class MaterialController {
             Authentication authentication) {
         MaterialUploadIntentResult result = materialService.createUploadIntent(new MaterialUploadCommand(
                 body.fileName(), body.sizeBytes(), body.mediaType(), body.sha256(), body.roundId(),
-                body.subSceneIds(), body.partition(), body.shareScope(), body.regulatorySource()),
+                body.subSceneIds(), body.partition(), body.shareScope(), body.regulatorySource(),
+                body.explorationSessionId()),
                 currentUser.id(authentication), idempotencyKey, RequestIdFilter.currentTraceId());
         UploadIntentResponse response = UploadIntentResponse.from(result);
         return ResponseEntity.created(URI.create("/api/v1/materials/" + result.material().id()))
@@ -100,11 +101,18 @@ public class MaterialController {
             @Positive long sizeBytes,
             @NotBlank @Size(max = 200) String mediaType,
             @NotBlank @Pattern(regexp = "[A-Fa-f0-9]{64}") String sha256,
-            @NotNull UUID roundId,
+            UUID roundId,
+            UUID explorationSessionId,
             Set<@NotNull UUID> subSceneIds,
             @NotNull MaterialPartition partition,
             @NotNull MaterialShareScope shareScope,
             boolean regulatorySource) {
+        public CreateUploadIntentRequest(String fileName, long sizeBytes, String mediaType, String sha256,
+                UUID roundId, Set<UUID> subSceneIds, MaterialPartition partition,
+                MaterialShareScope shareScope, boolean regulatorySource) {
+            this(fileName, sizeBytes, mediaType, sha256, roundId, null, subSceneIds, partition,
+                    shareScope, regulatorySource);
+        }
     }
 
     public record CompleteUploadRequest(List<@Valid UploadedPartRequest> parts) {

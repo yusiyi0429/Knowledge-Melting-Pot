@@ -8,7 +8,8 @@ import java.util.UUID;
 public interface KnowledgeAlignmentWorkflowPort {
     AlignmentResult generate(AlignmentRequest request);
 
-    record AlignmentRequest(UUID jobId, AlignmentAction action, KnowledgeIr base,
+    record AlignmentRequest(UUID jobId, UUID modelConfigVersionId, UUID skillVersionId,
+            AlignmentAction action, KnowledgeIr base,
             List<Evidence> evidence) {
         public AlignmentRequest {
             evidence = evidence == null ? List.of() : List.copyOf(evidence);

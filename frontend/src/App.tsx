@@ -9,6 +9,7 @@ import { ModelsPage } from "./pages/ModelsPage";
 import { ScenePage } from "./pages/ScenePage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { UsersPage } from "./pages/UsersPage";
+import { ExplorationPage } from "./pages/ExplorationPage";
 import { Button, Glyph } from "./components/Ui";
 
 function NotFound({ onNavigate }: { onNavigate: (href: string) => void }) {
@@ -25,6 +26,7 @@ export default function App() {
 
   let page;
   if (pathname === "/") page = <DashboardPage onNavigate={navigate}/>;
+  else if (pathname === "/explore") page = <ExplorationPage onNavigate={navigate}/>;
   else if (pathname.startsWith("/scenes/")) {
     const sceneId = pathname.split("/")[2];
     page = sceneId

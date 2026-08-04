@@ -33,12 +33,13 @@ public class JdbcExtractionRunRepository implements ExtractionRunRepository {
         jdbc.update("""
                 INSERT INTO extraction_run (
                     id, job_id, document_id, sub_scene_id, round_id, base_revision_id, base_etag,
-                    model_config_version_id, skill_version_id, role_config_version_id,
+                    model_config_version_id, skill_version_id, role_config_version_id, role_config_hash,
                     generation_parameters, canonical_input_hash, schema_version, stage,
                     created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '{}'::jsonb, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}'::jsonb, ?, ?, ?, ?, ?, ?)
                 """, run.id(), run.jobId(), run.documentId(), run.subSceneId(), run.roundId(),
                 run.baseRevisionId(), run.baseEtag(), run.modelConfigVersionId(), run.skillVersionId(),
+                run.roleConfigVersionId(), run.roleConfigHash(),
                 run.canonicalInputHash(), KnowledgeIr.SCHEMA_VERSION, run.stage().name(), run.createdBy(),
                 JdbcTimes.toJdbc(run.createdAt()), JdbcTimes.toJdbc(run.updatedAt()));
         for (FrozenExtractionChunk frozen : chunks) {
@@ -62,7 +63,8 @@ public class JdbcExtractionRunRepository implements ExtractionRunRepository {
     public Optional<ExtractionRun> findByJobId(UUID jobId) {
         return jdbc.query("""
                 SELECT id, job_id, document_id, sub_scene_id, round_id, base_revision_id, base_etag,
-                       model_config_version_id, skill_version_id, canonical_input_hash, stage,
+                       model_config_version_id, skill_version_id, role_config_version_id, role_config_hash,
+                       canonical_input_hash, stage,
                        created_by, created_at, updated_at
                 FROM extraction_run WHERE job_id = ?
                 """, JdbcExtractionRunRepository::mapRun, jobId).stream().findFirst();
@@ -139,10 +141,16 @@ public class JdbcExtractionRunRepository implements ExtractionRunRepository {
                 resultSet.getObject("document_id", UUID.class), resultSet.getObject("sub_scene_id", UUID.class),
                 resultSet.getObject("round_id", UUID.class), resultSet.getObject("base_revision_id", UUID.class),
                 resultSet.getString("base_etag"), resultSet.getObject("model_config_version_id", UUID.class),
-                resultSet.getObject("skill_version_id", UUID.class), resultSet.getString("canonical_input_hash").trim(),
+                resultSet.getObject("skill_version_id", UUID.class),
+                resultSet.getObject("role_config_version_id", UUID.class),
+                trimmed(resultSet.getString("role_config_hash")), resultSet.getString("canonical_input_hash").trim(),
                 ExtractionRun.Stage.valueOf(resultSet.getString("stage")),
                 resultSet.getObject("created_by", UUID.class), resultSet.getTimestamp("created_at").toInstant(),
                 resultSet.getTimestamp("updated_at").toInstant());
+    }
+
+    private static String trimmed(String value) {
+        return value == null ? null : value.trim();
     }
 
     private static MaterialChunk mapChunk(ResultSet resultSet) throws SQLException {

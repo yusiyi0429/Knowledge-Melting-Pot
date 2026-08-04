@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   abortUpload,
+  appendAgentMount,
+  applyConfigurationImport,
   adoptAlignmentProposal,
   ApiError,
   changePassword,
@@ -16,12 +18,14 @@ import {
   deleteModelConnection,
   generateAssets,
   getJob,
+  getEvaluationRun,
   getKnowledgeDocument,
   getLatestRelease,
   getReleaseManifest,
   getScene,
   listDocumentRevisions,
   listExtractionRounds,
+  listEvaluationRuns,
   listModelConfigVersions,
   listModelConnections,
   listAuditEvents,
@@ -35,17 +39,20 @@ import {
   listSubSceneAssets,
   listSubScenes,
   listUsers,
+  getAgentScope,
   listWorkbenchMaterials,
   login,
   resetUserPassword,
   saveKnowledgeDocument,
   startAlignment,
   startExtraction,
+  startReleaseEvaluation,
   testModelConnection,
   updateModelConnection,
   updateScene,
   updateUser,
   validateRelease,
+  previewConfigurationImport,
 } from "./api";
 import type { CreateUploadIntentDraft } from "./api";
 
@@ -299,6 +306,66 @@ describe("model connection API client", () => {
       status: 400,
       message: "One or more fields are invalid",
       errors: [{ field: "baseUrl", message: "must match the host whitelist" }],
+    });
+  });
+});
+
+describe("Agent governance API client", () => {
+  const csrfBody = { headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "csrf-token" };
+  const sceneId = "00000000-0000-4000-8000-000000000001";
+  const scope = { scope: "SCENE", scopeId: sceneId, sceneId, etag: "a".repeat(64), mounts: [] };
+  const draft = {
+    role: "KNOWLEDGE_EXTRACTOR" as const,
+    enabled: true,
+    modelConfigVersionId: null,
+    skillVersionId: null,
+    options: null,
+  };
+
+  it("loads a scope and appends a version with If-Match and CSRF", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(scope))
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json({ ...scope, etag: "b".repeat(64) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const loaded = await getAgentScope("SCENE", sceneId);
+    const saved = await appendAgentMount("SCENE", sceneId, loaded.etag, draft);
+
+    expect(saved.etag).toBe("b".repeat(64));
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-XSRF-TOKEN": "csrf-token",
+        "If-Match": "a".repeat(64),
+      },
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      scope: "SCENE", scopeId: sceneId, role: "KNOWLEDGE_EXTRACTOR", enabled: true,
+    });
+  });
+
+  it("previews an import and applies exactly the frozen manifest hash", async () => {
+    const preview = {
+      id: "00000000-0000-4000-8000-000000000099",
+      manifestHash: "c".repeat(64),
+      scope: "SCENE",
+      scopeId: sceneId,
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json(preview))
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json(scope));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const frozen = await previewConfigurationImport("SCENE", sceneId, [draft]);
+    await applyConfigurationImport(frozen.id, frozen.manifestHash);
+
+    expect(fetchMock.mock.calls[3]?.[0]).toBe(`/api/v1/configuration-imports/${preview.id}/apply`);
+    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ "If-Match": "c".repeat(64) }),
     });
   });
 });
@@ -934,6 +1001,53 @@ describe("release baseline API client", () => {
     const baseline = await getLatestRelease("scene-1");
 
     expect(baseline).toBeNull();
+  });
+});
+
+describe("release evaluation API client", () => {
+  const csrfBody = { headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "csrf-token" };
+  const run = {
+    id: "eval-1", releaseId: "rel-1", subSceneId: "sub-1", roundId: "round-1",
+    documentRevisionId: "rev-1", evaluationAssetId: "asset-eval", skillAssetId: "asset-skill",
+    modelConfigVersionId: "model-v1", skillVersionId: "skill-v1", jobId: "job-eval-1",
+    caseSetHash: "a".repeat(64), status: "SUCCEEDED", totalCases: 3, passedCases: 3,
+    failedCases: 0, errorCases: 0, accuracy: 1, failureCode: "",
+    createdAt: "2026-08-04T08:00:00Z", startedAt: "2026-08-04T08:00:01Z",
+    completedAt: "2026-08-04T08:00:03Z", updatedAt: "2026-08-04T08:00:03Z",
+  };
+
+  it("starts an idempotent release-bound evaluation", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json({ evaluationRunId: "eval-1", jobId: "job-eval-1",
+        status: "QUEUED", statusUrl: "/api/v1/jobs/job-eval-1",
+        eventsUrl: "/api/v1/jobs/job-eval-1/events" }, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const accepted = await startReleaseEvaluation("rel-1", "sub-1", "round-1", "evaluation-key-1");
+
+    expect(accepted.evaluationRunId).toBe("eval-1");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/releases/rel-1/subscenes/sub-1/evaluation-jobs");
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST", headers: { "Idempotency-Key": "evaluation-key-1" },
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ roundId: "round-1" });
+  });
+
+  it("loads runs and immutable per-case evidence without inventing metrics", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json([run]))
+      .mockResolvedValueOnce(Response.json({ run, cases: [{ id: "case-1", ordinal: 0,
+        caseKey: "late-120", input: "客户逾期120天", expected: "次级", materialId: "mat-1",
+        chunkId: "chunk-1", sourceRefCode: "SRC-HOLDOUT-1", tags: ["风险"], prediction: "次级",
+        outcome: "PASSED", errorCode: "", latencyMillis: 12 }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runs = await listEvaluationRuns("rel-1", "sub-1");
+    const detail = await getEvaluationRun("eval-1");
+
+    expect(runs[0]).toMatchObject({ status: "SUCCEEDED", accuracy: 1, totalCases: 3 });
+    expect(detail.cases[0]).toMatchObject({ sourceRefCode: "SRC-HOLDOUT-1", outcome: "PASSED" });
   });
 });
 

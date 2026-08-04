@@ -3,6 +3,7 @@ package com.knowledgemeltingpot.workbench.worker;
 import com.knowledgemeltingpot.workbench.application.port.JobLeaseRepository;
 import com.knowledgemeltingpot.workbench.application.port.LeasedJob;
 import com.knowledgemeltingpot.workbench.application.service.JobService;
+import com.knowledgemeltingpot.workbench.application.service.NotificationService;
 import com.knowledgemeltingpot.workbench.domain.JobType;
 import java.time.Clock;
 import java.time.Duration;
@@ -29,6 +30,7 @@ public class JobWorker {
 
     private final JobLeaseRepository leases;
     private final JobService jobs;
+    private final NotificationService notifications;
     private final List<JobHandler> handlers;
     private final ExecutorService jobExecutor;
     private final ScheduledExecutorService heartbeatExecutor;
@@ -38,7 +40,8 @@ public class JobWorker {
     private final Semaphore capacity;
     private final Set<JobType> acceptedTypes;
 
-    public JobWorker(JobLeaseRepository leases, JobService jobs, List<JobHandler> handlers,
+    public JobWorker(JobLeaseRepository leases, JobService jobs, NotificationService notifications,
+            List<JobHandler> handlers,
             ExecutorService jobExecutor, ScheduledExecutorService heartbeatExecutor, Clock clock,
             @Value("${workbench.worker.id:${HOSTNAME:worker}-${random.uuid}}") String workerId,
             @Value("${workbench.worker.lease-duration:PT2M}") Duration leaseDuration,
@@ -46,6 +49,7 @@ public class JobWorker {
             @Value("${workbench.worker.accepted-types:}") String acceptedTypesCsv) {
         this.leases = leases;
         this.jobs = jobs;
+        this.notifications = notifications;
         this.handlers = List.copyOf(handlers);
         this.jobExecutor = jobExecutor;
         this.heartbeatExecutor = heartbeatExecutor;
@@ -129,6 +133,7 @@ public class JobWorker {
                             Map.of("status", "SUCCEEDED", "resultReference", result.resultReference(),
                                     "stage", "COMPLETED", "percent", 100,
                                     "messageCode", "JOB_COMPLETED", "traceId", jobTraceId(leasedJob)));
+                    safeNotify(leasedJob.job().id());
                 }
             } else if (leases.fail(leasedJob.job().id(), workerId, result.errorCode(),
                     safeMessage(result.errorMessage()), Instant.now(clock))) {
@@ -136,6 +141,7 @@ public class JobWorker {
                         Map.of("status", "FAILED", "errorCode", result.errorCode(),
                                 "stage", "FAILED", "percent", jobs.get(leasedJob.job().id()).progress(),
                                 "messageCode", result.errorCode(), "traceId", jobTraceId(leasedJob)));
+                safeNotify(leasedJob.job().id());
             }
         } catch (Exception exception) {
             LOGGER.error("Worker job {} failed with {}", leasedJob.job().id(), exception.getClass().getSimpleName());
@@ -145,6 +151,7 @@ public class JobWorker {
                         Map.of("status", "FAILED", "errorCode", "WORKER_ERROR",
                                 "stage", "FAILED", "percent", jobs.get(leasedJob.job().id()).progress(),
                                 "messageCode", "WORKER_ERROR", "traceId", jobTraceId(leasedJob)));
+                safeNotify(leasedJob.job().id());
             }
         } finally {
             heartbeat.cancel(false);
@@ -160,5 +167,13 @@ public class JobWorker {
 
     private String jobTraceId(LeasedJob leasedJob) {
         return "job-" + leasedJob.job().id();
+    }
+
+    private void safeNotify(java.util.UUID jobId) {
+        try {
+            notifications.notifyTerminalJob(jobId);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("Job {} completed but notification creation failed", jobId);
+        }
     }
 }

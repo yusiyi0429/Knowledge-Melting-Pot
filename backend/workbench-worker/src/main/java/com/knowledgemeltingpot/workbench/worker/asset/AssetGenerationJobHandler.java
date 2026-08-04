@@ -110,15 +110,15 @@ public class AssetGenerationJobHandler implements JobHandler {
             context.progress(Math.max(1, (step * 100) / total), "ASSET_" + type.name() + "_STARTED");
             try {
                 generateOne(subSceneId, type, revision, context);
-                context.progress(((step + 1) * 100) / total, "ASSET_" + type.name() + "_DONE");
+                context.progress(runningProgress(step + 1, total), "ASSET_" + type.name() + "_DONE");
             } catch (AssetBlockedException blockedException) {
                 blocked.add(type.name());
-                context.progress(((step + 1) * 100) / total, "ASSET_" + type.name() + "_BLOCKED");
+                context.progress(runningProgress(step + 1, total), "ASSET_" + type.name() + "_BLOCKED");
             } catch (Exception exception) {
                 failed.add(type.name());
                 LOGGER.error("Asset generation failed for job {} type {}: {}", jobId, type,
                         exception.getClass().getSimpleName());
-                context.progress(((step + 1) * 100) / total, "ASSET_" + type.name() + "_FAILED");
+                context.progress(runningProgress(step + 1, total), "ASSET_" + type.name() + "_FAILED");
             }
         }
         if (!blocked.isEmpty()) {
@@ -173,6 +173,11 @@ public class AssetGenerationJobHandler implements JobHandler {
         return message == null || message.isBlank()
                 ? exception.getClass().getSimpleName()
                 : message;
+    }
+
+    private static int runningProgress(int completed, int total) {
+        // JobLeaseRepository reserves 100 for the atomic RUNNING -> SUCCEEDED transition.
+        return Math.min(99, (completed * 100) / total);
     }
 
     private String sha256(byte[] bytes) {

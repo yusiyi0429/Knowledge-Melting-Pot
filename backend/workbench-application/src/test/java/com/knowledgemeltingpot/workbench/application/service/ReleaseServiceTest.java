@@ -23,16 +23,30 @@ import com.knowledgemeltingpot.workbench.application.port.AssetRepository;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseItemSnapshot;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseRepository;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
+import com.knowledgemeltingpot.workbench.application.port.ModelConnectionRepository;
+import com.knowledgemeltingpot.workbench.application.port.SkillRepository;
 import com.knowledgemeltingpot.workbench.domain.Asset;
 import com.knowledgemeltingpot.workbench.domain.AssetStatus;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
+import com.knowledgemeltingpot.workbench.domain.AgentMountScope;
+import com.knowledgemeltingpot.workbench.domain.AgentMountVersion;
+import com.knowledgemeltingpot.workbench.domain.AgentRole;
+import com.knowledgemeltingpot.workbench.domain.ModelConfigVersion;
+import com.knowledgemeltingpot.workbench.domain.ModelConnection;
+import com.knowledgemeltingpot.workbench.domain.ModelConnectionValidationStatus;
+import com.knowledgemeltingpot.workbench.domain.ModelProvider;
 import com.knowledgemeltingpot.workbench.domain.Release;
 import com.knowledgemeltingpot.workbench.domain.ReleaseCoverage;
 import com.knowledgemeltingpot.workbench.domain.ReleaseItemDisposition;
 import com.knowledgemeltingpot.workbench.domain.ReleaseStatus;
 import com.knowledgemeltingpot.workbench.domain.Scene;
+import com.knowledgemeltingpot.workbench.domain.Skill;
+import com.knowledgemeltingpot.workbench.domain.SkillKind;
+import com.knowledgemeltingpot.workbench.domain.SkillVersion;
 import com.knowledgemeltingpot.workbench.domain.SubScene;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -54,6 +68,9 @@ class ReleaseServiceTest {
     private AuditService audit;
     private ObjectMapper objectMapper;
     private ReleaseService service;
+    private AgentConfigurationService agentConfigurations;
+    private ModelConnectionRepository models;
+    private SkillRepository skills;
 
     @BeforeEach
     void setUp() {
@@ -61,10 +78,14 @@ class ReleaseServiceTest {
         assets = mock(AssetRepository.class);
         releases = mock(ReleaseRepository.class);
         audit = mock(AuditService.class);
+        agentConfigurations = mock(AgentConfigurationService.class);
+        models = mock(ModelConnectionRepository.class);
+        skills = mock(SkillRepository.class);
         objectMapper = canonicalObjectMapper();
         when(releases.isFinalizedDocumentRevision(any(UUID.class), any(UUID.class))).thenReturn(true);
         service = new ReleaseService(scenes, assets, releases, audit, objectMapper,
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), agentConfigurations,
+                models, skills);
     }
 
     @Test
@@ -190,6 +211,55 @@ class ReleaseServiceTest {
         ObjectNode manifest = (ObjectNode) objectMapper.readTree(release.manifestJson());
         assertThat(manifest.path("subScenes").get(1).path("status").asText()).isEqualTo("MISSING");
         assertThat(manifest.path("subScenes").get(1).path("assets")).isEmpty();
+    }
+
+    @Test
+    void selectedSubSceneSnapshotsResolvedAgentLineageModelAndSkillWithoutCredentials() throws Exception {
+        UUID sceneId = UUID.randomUUID();
+        UUID subSceneId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+        UUID modelConnectionId = UUID.randomUUID();
+        UUID modelVersionId = UUID.randomUUID();
+        UUID skillId = UUID.randomUUID();
+        UUID skillVersionId = UUID.randomUUID();
+        UUID templateVersionId = UUID.randomUUID();
+        AgentMountVersion mount = new AgentMountVersion(UUID.randomUUID(), AgentRole.KNOWLEDGE_EXTRACTOR,
+                AgentMountScope.SCENE, sceneId, 2, templateVersionId, true, modelVersionId, skillVersionId,
+                "{\"strategy\":\"map-reduce\"}", "a".repeat(64), actorId, NOW);
+        var effective = new AgentConfigurationService.EffectiveAgentConfiguration(
+                AgentRole.KNOWLEDGE_EXTRACTOR, "知识萃取智能体", "EXTRACTION", true,
+                modelVersionId, skillVersionId, mount.optionsJson(), "b".repeat(64), mount.id(),
+                AgentMountScope.SCENE, AgentMountScope.SCENE, AgentMountScope.SCENE, "SCENE", List.of(mount));
+        ModelConfigVersion model = new ModelConfigVersion(modelVersionId, modelConnectionId, 3, "qwen-plus",
+                new BigDecimal("0.25"), 4096, actorId, NOW);
+        ModelConnection connection = new ModelConnection(modelConnectionId, "DashScope", ModelProvider.DASHSCOPE,
+                URI.create("https://dashscope.example.com/v1"), Optional.empty(), true,
+                ModelConnectionValidationStatus.UNTESTED, null, actorId, NOW, NOW);
+        Skill skill = new Skill(skillId, "受控萃取", SkillKind.TEMPLATE, "", null, null, null, actorId, NOW);
+        SkillVersion skillVersion = new SkillVersion(skillVersionId, skillId, 4,
+                "{\"executionMode\":\"RESOURCE_ONLY\"}", "c".repeat(64), actorId, NOW);
+        givenScene(sceneId, List.of(subSceneId));
+        when(assets.findLatestByScene(sceneId)).thenReturn(readyAssets(subSceneId, UUID.randomUUID(), 1));
+        when(releases.findLatestPublished(sceneId)).thenReturn(Optional.empty());
+        when(releases.savePublished(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(agentConfigurations.resolve(sceneId, subSceneId)).thenReturn(List.of(effective));
+        when(models.findConfigVersion(modelVersionId)).thenReturn(Optional.of(model));
+        when(models.findConnection(modelConnectionId)).thenReturn(Optional.of(connection));
+        when(skills.findVersion(skillVersionId)).thenReturn(Optional.of(skillVersion));
+        when(skills.findById(skillId)).thenReturn(Optional.of(skill));
+
+        Release release = service.publish(sceneId, command(List.of(subSceneId), null), actorId, "trace-agent");
+
+        var configuration = objectMapper.readTree(release.manifestJson())
+                .path("subScenes").get(0).path("agentConfigurations").get(0);
+        assertThat(configuration.path("role").asText()).isEqualTo("KNOWLEDGE_EXTRACTOR");
+        assertThat(configuration.path("effectiveHash").asText()).isEqualTo("b".repeat(64));
+        assertThat(configuration.path("model").path("provider").asText()).isEqualTo("DASHSCOPE");
+        assertThat(configuration.path("model").path("modelId").asText()).isEqualTo("qwen-plus");
+        assertThat(configuration.path("model").has("credential")).isFalse();
+        assertThat(configuration.path("skill").path("packageHash").asText()).isEqualTo("c".repeat(64));
+        assertThat(configuration.path("lineage").get(0).path("templateVersionId").asText())
+                .isEqualTo(templateVersionId.toString());
     }
 
     @Test

@@ -16,11 +16,13 @@ function formatBytes(bytes: number): string {
 export function UploadMaterialDialog({
   roundId,
   subSceneId,
+  explorationSessionId,
   onClose,
   onUploaded,
 }: {
-  roundId: string;
-  subSceneId: string;
+  roundId?: string;
+  subSceneId?: string;
+  explorationSessionId?: string;
   onClose: () => void;
   onUploaded: () => void;
 }) {
@@ -122,11 +124,12 @@ export function UploadMaterialDialog({
         sizeBytes: file.size,
         mediaType,
         sha256: digest,
-        roundId,
-        subSceneIds: [subSceneId],
-        partition,
+        roundId: roundId ?? null,
+        explorationSessionId,
+        subSceneIds: subSceneId ? [subSceneId] : [],
+        partition: explorationSessionId ? "SOURCE" : partition,
         shareScope: "ROUND",
-        regulatorySource: partition === "LABELED_HOLDOUT" ? false : regulatorySource,
+        regulatorySource: explorationSessionId || partition === "LABELED_HOLDOUT" ? false : regulatorySource,
       }, crypto.randomUUID());
       // Register the intent immediately so a cancel racing this await can still abort it.
       intentIdRef.current = intent.id;
@@ -208,8 +211,10 @@ export function UploadMaterialDialog({
       >
         <header className="model-dialog__head">
           <div>
-            <h2 id="upload-dialog-title">上传素材</h2>
-            <p>固定绑定当前轮次与当前子场景（ROUND 范围）。</p>
+            <h2 id="upload-dialog-title">{explorationSessionId ? "添加探索素材" : "上传素材"}</h2>
+            <p>{explorationSessionId
+              ? "素材先进入隔离 staging；接受候选后复用同一文件与解析结果。"
+              : "固定绑定当前轮次与当前子场景（ROUND 范围）。"}</p>
           </div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={handleCancel} disabled={cancelling}>
             <Glyph name="close" size={16} />
@@ -242,7 +247,7 @@ export function UploadMaterialDialog({
             </label>
           ) : null}
 
-          {phase !== "queued" ? (
+          {phase !== "queued" && !explorationSessionId ? (
             <div className="field">
               <span>用途分区</span>
               <div className="role-checks">
@@ -262,7 +267,7 @@ export function UploadMaterialDialog({
             </div>
           ) : null}
 
-          {phase !== "queued" ? (
+          {phase !== "queued" && !explorationSessionId ? (
             <label className="field field--row">
               <span>监管依据</span>
               <input type="checkbox" name="regulatorySource" disabled={submitting || partition === "LABELED_HOLDOUT"}
@@ -271,7 +276,7 @@ export function UploadMaterialDialog({
             </label>
           ) : null}
 
-          {partition === "LABELED_HOLDOUT" ? (
+          {!explorationSessionId && partition === "LABELED_HOLDOUT" ? (
             <small className="field-hint">留出评测分区不能作为监管对齐依据。</small>
           ) : null}
 

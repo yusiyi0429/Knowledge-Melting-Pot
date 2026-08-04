@@ -2,6 +2,11 @@ package com.knowledgemeltingpot.workbench.application.service;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
+import com.knowledgemeltingpot.workbench.domain.AgentMountScope;
+import com.knowledgemeltingpot.workbench.domain.AgentRole;
+import com.knowledgemeltingpot.workbench.domain.ModelProvider;
+import com.knowledgemeltingpot.workbench.domain.SkillKind;
+import java.math.BigDecimal;
 import com.knowledgemeltingpot.workbench.domain.ReleaseCoverage;
 import com.knowledgemeltingpot.workbench.domain.ReleaseSubSceneStatus;
 import java.time.Instant;
@@ -34,10 +39,12 @@ public record ReleaseManifest(
             ReleaseSubSceneStatus status,
             UUID sourceReleaseId,
             UUID documentRevisionId,
-            List<AssetEntry> assets) {
+            List<AssetEntry> assets,
+            List<AgentConfigurationEntry> agentConfigurations) {
 
         public SubSceneEntry {
             assets = List.copyOf(assets);
+            agentConfigurations = List.copyOf(agentConfigurations);
         }
     }
 
@@ -49,4 +56,24 @@ public record ReleaseManifest(
             String objectKey,
             String checksum) {
     }
+
+    public record AgentConfigurationEntry(
+            AgentRole role,
+            boolean enabled,
+            String effectiveHash,
+            UUID effectiveMountVersionId,
+            ModelEntry model,
+            SkillEntry skill,
+            List<MountEntry> lineage) {
+        public AgentConfigurationEntry { lineage = List.copyOf(lineage); }
+    }
+
+    public record ModelEntry(UUID configVersionId, UUID connectionId, ModelProvider provider, String modelId,
+            int version, BigDecimal temperature, int maxOutputTokens) { }
+
+    public record SkillEntry(UUID skillVersionId, UUID skillId, SkillKind kind, int version,
+            String packageHash) { }
+
+    public record MountEntry(UUID mountVersionId, AgentMountScope scope, int version,
+            UUID templateVersionId, String configHash) { }
 }

@@ -15,7 +15,14 @@ services:
     environment:
       KMP_AGENT_ENABLED: "false"
       KMP_AGENT_TEST_STUB_ENABLED: "true"
-      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST,EXTRACT,REEXTRACT,ALIGN,GENERATE_ASSET,GENERATE_ALL"
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST,EXTRACT,REEXTRACT,ALIGN,GENERATE_ASSET,GENERATE_ALL,SCENE_EXPLORE"
+
+  evaluation-worker:
+    environment:
+      KMP_AGENT_ENABLED: "false"
+      KMP_AGENT_TEST_STUB_ENABLED: "false"
+      KMP_SKILL_SANDBOX_ENABLED: "true"
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "EVALUATE"
 
 networks:
   # Docker 29+ requires a non-internal companion network for host-published

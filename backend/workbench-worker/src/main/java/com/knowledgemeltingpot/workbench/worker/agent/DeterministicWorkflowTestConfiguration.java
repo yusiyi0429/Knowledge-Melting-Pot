@@ -2,6 +2,9 @@ package com.knowledgemeltingpot.workbench.worker.agent;
 
 import com.knowledgemeltingpot.workbench.application.port.KnowledgeAlignmentWorkflowPort;
 import com.knowledgemeltingpot.workbench.application.port.KnowledgeExtractionWorkflowPort;
+import com.knowledgemeltingpot.workbench.application.port.SceneExplorationWorkflowPort;
+import com.knowledgemeltingpot.workbench.application.port.SkillEvaluationWorkflowPort;
+import com.knowledgemeltingpot.workbench.domain.ExplorationCandidate;
 import com.knowledgemeltingpot.workbench.domain.AlignmentAction;
 import com.knowledgemeltingpot.workbench.domain.KnowledgeIr;
 import java.util.ArrayList;
@@ -67,6 +70,41 @@ public class DeterministicWorkflowTestConfiguration {
                     base.conflicts(), base.gaps(), refs);
             return new KnowledgeAlignmentWorkflowPort.AlignmentResult(replacement,
                     "根据用户明确指定的监管依据补充一条可追溯规则。");
+        };
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(SceneExplorationWorkflowPort.class)
+    SceneExplorationWorkflowPort deterministicSceneExplorationWorkflow() {
+        return request -> {
+            List<java.util.UUID> materialIds = request.sources().stream()
+                    .map(SceneExplorationWorkflowPort.ExplorationSource::materialId).toList();
+            String sourceNames = request.sources().stream()
+                    .map(SceneExplorationWorkflowPort.ExplorationSource::fileName)
+                    .collect(java.util.stream.Collectors.joining("、"));
+            var candidate = new SceneExplorationWorkflowPort.CandidateDraft(1, "授信资料风险识别",
+                    "由 staging 素材识别出的本地验收候选场景。", "异常线索与审批红线",
+                    "聚合规则、例外与审批边界。", "候选直接来自已验证素材：" + sourceNames,
+                    ExplorationCandidate.ValueLevel.HIGH, Math.max(1, request.sources().size() * 3),
+                    Math.max(1, request.sources().size()), List.of("授信", "风险识别"), materialIds);
+            return new SceneExplorationWorkflowPort.ExplorationResult(List.of(candidate));
+        };
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(SkillEvaluationWorkflowPort.class)
+    SkillEvaluationWorkflowPort deterministicSkillEvaluationWorkflow() {
+        return request -> {
+            String input = request.input().replaceAll("\\s+", "");
+            String prediction;
+            if (input.contains("逾期120") || input.contains("严重减值") || input.contains("重组失败")) {
+                prediction = "次级";
+            } else if (input.contains("逾期30") || input.contains("还款能力下降")) {
+                prediction = "关注";
+            } else {
+                prediction = "正常";
+            }
+            return new SkillEvaluationWorkflowPort.EvaluationPrediction(prediction);
         };
     }
 }

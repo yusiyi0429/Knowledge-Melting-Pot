@@ -11,6 +11,8 @@ import com.knowledgemeltingpot.workbench.application.port.AssetRepository;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseItemSnapshot;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseRepository;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
+import com.knowledgemeltingpot.workbench.application.port.ModelConnectionRepository;
+import com.knowledgemeltingpot.workbench.application.port.SkillRepository;
 import com.knowledgemeltingpot.workbench.domain.Asset;
 import com.knowledgemeltingpot.workbench.domain.AssetStatus;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
@@ -50,9 +52,14 @@ public class ReleaseService {
     private final AuditService auditService;
     private final ObjectMapper canonicalObjectMapper;
     private final Clock clock;
+    private final AgentConfigurationService agentConfigurationService;
+    private final ModelConnectionRepository modelRepository;
+    private final SkillRepository skillRepository;
 
     public ReleaseService(SceneRepository sceneRepository, AssetRepository assetRepository,
-            ReleaseRepository releaseRepository, AuditService auditService, ObjectMapper objectMapper, Clock clock) {
+            ReleaseRepository releaseRepository, AuditService auditService, ObjectMapper objectMapper, Clock clock,
+            AgentConfigurationService agentConfigurationService, ModelConnectionRepository modelRepository,
+            SkillRepository skillRepository) {
         this.sceneRepository = sceneRepository;
         this.assetRepository = assetRepository;
         this.releaseRepository = releaseRepository;
@@ -61,6 +68,9 @@ public class ReleaseService {
                 .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true)
                 .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
         this.clock = clock;
+        this.agentConfigurationService = agentConfigurationService;
+        this.modelRepository = modelRepository;
+        this.skillRepository = skillRepository;
     }
 
     @Transactional(readOnly = true)
@@ -79,10 +89,10 @@ public class ReleaseService {
         Instant now = Instant.now(clock);
         UUID releaseId = UUID.randomUUID();
         UUID previousReleaseId = plan.validation().baseReleaseId();
-        ReleaseManifest unsignedManifest = new ReleaseManifest("1.0", releaseId, sceneId, command.tag(),
+        ReleaseManifest unsignedManifest = new ReleaseManifest("1.1", releaseId, sceneId, command.tag(),
                 plan.validation().coverage(), command.note(), now, previousReleaseId, plan.subScenes(), "");
         String manifestHash = Hashes.sha256(toCanonicalJson(unsignedManifest));
-        ReleaseManifest manifest = new ReleaseManifest("1.0", releaseId, sceneId, command.tag(),
+        ReleaseManifest manifest = new ReleaseManifest("1.1", releaseId, sceneId, command.tag(),
                 plan.validation().coverage(), command.note(), now, previousReleaseId, plan.subScenes(), manifestHash);
         String manifestJson = toCanonicalJson(manifest);
         Release release = new Release(releaseId, sceneId, command.tag(), ReleaseStatus.PUBLISHED,
@@ -154,6 +164,8 @@ public class ReleaseService {
         Map<UUID, List<ReleaseItemSnapshot>> previousItems = groupBySubScene(baseReleaseId == null
                 ? List.of()
                 : releaseRepository.findItems(baseReleaseId));
+        Map<UUID, List<ReleaseManifest.AgentConfigurationEntry>> previousConfigurations =
+                previousConfigurations(baseRelease);
         List<UUID> selected = new ArrayList<>();
         List<UUID> carriedForward = new ArrayList<>();
         List<UUID> missing = new ArrayList<>();
@@ -163,7 +175,7 @@ public class ReleaseService {
         for (SubScene subScene : subScenes) {
             if (selectedIds.contains(subScene.id())) {
                 selected.add(subScene.id());
-                appendSelected(subScene.id(), latestAssets, blockers, items, manifestSubScenes);
+                appendSelected(sceneId, subScene.id(), latestAssets, blockers, items, manifestSubScenes);
                 continue;
             }
 
@@ -171,11 +183,11 @@ public class ReleaseService {
             if (!historicalItems.isEmpty()) {
                 carriedForward.add(subScene.id());
                 appendCarriedForward(subScene.id(), baseReleaseId, historicalItems, blockers, items,
-                        manifestSubScenes);
+                        manifestSubScenes, previousConfigurations.getOrDefault(subScene.id(), List.of()));
             } else {
                 missing.add(subScene.id());
                 manifestSubScenes.add(new ReleaseManifest.SubSceneEntry(subScene.id(),
-                        ReleaseSubSceneStatus.MISSING, null, null, List.of()));
+                        ReleaseSubSceneStatus.MISSING, null, null, List.of(), List.of()));
             }
         }
 
@@ -190,7 +202,7 @@ public class ReleaseService {
         return new ReleasePlan(validation, List.copyOf(items), List.copyOf(manifestSubScenes));
     }
 
-    private void appendSelected(UUID subSceneId, Map<String, Asset> latestAssets, List<String> blockers,
+    private void appendSelected(UUID sceneId, UUID subSceneId, Map<String, Asset> latestAssets, List<String> blockers,
             List<ReleaseItemSnapshot> releaseItems, List<ReleaseManifest.SubSceneEntry> manifestSubScenes) {
         List<Asset> assets = new ArrayList<>();
         for (AssetType type : sortedAssetTypes()) {
@@ -228,12 +240,16 @@ public class ReleaseService {
                 .sorted(ITEM_ORDER)
                 .toList();
         releaseItems.addAll(selectedItems);
-        manifestSubScenes.add(toManifestSubScene(subSceneId, ReleaseSubSceneStatus.SELECTED, null, selectedItems));
+        List<ReleaseManifest.AgentConfigurationEntry> configurations = agentConfigurationService
+                .resolve(sceneId, subSceneId).stream().map(this::snapshotConfiguration).toList();
+        manifestSubScenes.add(toManifestSubScene(subSceneId, ReleaseSubSceneStatus.SELECTED, null, selectedItems,
+                configurations));
     }
 
     private void appendCarriedForward(UUID subSceneId, UUID baseReleaseId,
             List<ReleaseItemSnapshot> historicalItems, List<String> blockers,
-            List<ReleaseItemSnapshot> releaseItems, List<ReleaseManifest.SubSceneEntry> manifestSubScenes) {
+            List<ReleaseItemSnapshot> releaseItems, List<ReleaseManifest.SubSceneEntry> manifestSubScenes,
+            List<ReleaseManifest.AgentConfigurationEntry> configurations) {
         List<ReleaseItemSnapshot> ordered = historicalItems.stream().sorted(ITEM_ORDER).toList();
         Set<AssetType> types = ordered.stream().map(ReleaseItemSnapshot::assetType)
                 .collect(java.util.stream.Collectors.toCollection(() -> EnumSet.noneOf(AssetType.class)));
@@ -255,18 +271,65 @@ public class ReleaseService {
                 .toList();
         releaseItems.addAll(carriedItems);
         manifestSubScenes.add(toManifestSubScene(subSceneId, ReleaseSubSceneStatus.CARRIED_FORWARD,
-                baseReleaseId, carriedItems));
+                baseReleaseId, carriedItems, configurations));
     }
 
     private ReleaseManifest.SubSceneEntry toManifestSubScene(UUID subSceneId, ReleaseSubSceneStatus status,
-            UUID sourceReleaseId, List<ReleaseItemSnapshot> items) {
+            UUID sourceReleaseId, List<ReleaseItemSnapshot> items,
+            List<ReleaseManifest.AgentConfigurationEntry> configurations) {
         List<ReleaseManifest.AssetEntry> assets = items.stream()
                 .sorted(ITEM_ORDER)
                 .map(item -> new ReleaseManifest.AssetEntry(item.assetId(), item.assetType(), item.assetVersion(),
                         item.documentRevisionId(), item.objectKey(), item.checksum()))
                 .toList();
         UUID documentRevisionId = items.getFirst().documentRevisionId();
-        return new ReleaseManifest.SubSceneEntry(subSceneId, status, sourceReleaseId, documentRevisionId, assets);
+        return new ReleaseManifest.SubSceneEntry(subSceneId, status, sourceReleaseId, documentRevisionId, assets,
+                configurations);
+    }
+
+    private ReleaseManifest.AgentConfigurationEntry snapshotConfiguration(
+            AgentConfigurationService.EffectiveAgentConfiguration configuration) {
+        ReleaseManifest.ModelEntry model = null;
+        if (configuration.modelConfigVersionId() != null) {
+            var version = modelRepository.findConfigVersion(configuration.modelConfigVersionId())
+                    .orElseThrow(() -> new IllegalStateException("effective model version is unavailable"));
+            var connection = modelRepository.findConnection(version.modelConnectionId())
+                    .orElseThrow(() -> new IllegalStateException("effective model connection is unavailable"));
+            model = new ReleaseManifest.ModelEntry(version.id(), connection.id(), connection.provider(),
+                    version.modelId(), version.version(), version.temperature(), version.maxOutputTokens());
+        }
+        ReleaseManifest.SkillEntry skill = null;
+        if (configuration.skillVersionId() != null) {
+            var version = skillRepository.findVersion(configuration.skillVersionId())
+                    .orElseThrow(() -> new IllegalStateException("effective Skill version is unavailable"));
+            var definition = skillRepository.findById(version.skillId())
+                    .orElseThrow(() -> new IllegalStateException("effective Skill is unavailable"));
+            skill = new ReleaseManifest.SkillEntry(version.id(), definition.id(), definition.kind(),
+                    version.version(), version.packageHash());
+        }
+        List<ReleaseManifest.MountEntry> lineage = configuration.lineage().stream()
+                .map(mount -> new ReleaseManifest.MountEntry(mount.id(), mount.scope(), mount.version(),
+                        mount.templateVersionId(), mount.configHash()))
+                .toList();
+        return new ReleaseManifest.AgentConfigurationEntry(configuration.role(), configuration.enabled(),
+                configuration.effectiveHash(), configuration.effectiveMountVersionId(), model, skill, lineage);
+    }
+
+    private Map<UUID, List<ReleaseManifest.AgentConfigurationEntry>> previousConfigurations(Release baseRelease) {
+        if (baseRelease == null || baseRelease.manifestJson() == null || baseRelease.manifestJson().isBlank()) {
+            return Map.of();
+        }
+        try {
+            ReleaseManifest manifest = canonicalObjectMapper.readValue(baseRelease.manifestJson(),
+                    ReleaseManifest.class);
+            Map<UUID, List<ReleaseManifest.AgentConfigurationEntry>> result = new HashMap<>();
+            for (ReleaseManifest.SubSceneEntry entry : manifest.subScenes()) {
+                result.put(entry.subSceneId(), entry.agentConfigurations());
+            }
+            return result;
+        } catch (JsonProcessingException | NullPointerException exception) {
+            return Map.of();
+        }
     }
 
     private Map<String, Asset> indexAssets(List<Asset> assets) {

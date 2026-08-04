@@ -13,6 +13,8 @@ public record ExtractionRun(
         String baseEtag,
         UUID modelConfigVersionId,
         UUID skillVersionId,
+        UUID roleConfigVersionId,
+        String roleConfigHash,
         String canonicalInputHash,
         Stage stage,
         UUID createdBy,
@@ -27,6 +29,9 @@ public record ExtractionRun(
         roundId = DomainChecks.required(roundId, "roundId");
         modelConfigVersionId = DomainChecks.required(modelConfigVersionId, "modelConfigVersionId");
         skillVersionId = DomainChecks.required(skillVersionId, "skillVersionId");
+        if ((roleConfigVersionId == null) != (roleConfigHash == null)) {
+            throw new IllegalArgumentException("role configuration version and hash must both be present or absent");
+        }
         canonicalInputHash = DomainChecks.text(canonicalInputHash, "canonicalInputHash");
         stage = DomainChecks.required(stage, "stage");
         createdBy = DomainChecks.required(createdBy, "createdBy");

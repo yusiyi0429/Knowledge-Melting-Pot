@@ -61,6 +61,7 @@ public class SecurityConfiguration {
                         .requestMatchers("/api/v1/users", "/api/v1/users/**").hasRole("ADMIN")
                         .requestMatchers("/api/v1/auth/password", "/api/v1/auth/me", "/api/v1/auth/logout")
                             .authenticated()
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/notifications/**").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/scenes/*/releases").hasAnyRole("PUBLISHER", "ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/v1/scenes/*/release-validations").hasAnyRole("PUBLISHER", "ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/v1/**").hasAnyRole("OPERATOR", "ADMIN")

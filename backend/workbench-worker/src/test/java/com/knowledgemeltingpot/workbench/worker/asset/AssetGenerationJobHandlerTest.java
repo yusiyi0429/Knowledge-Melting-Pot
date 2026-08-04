@@ -220,7 +220,7 @@ class AssetGenerationJobHandlerTest {
     }
 
     @Test
-    void progressIsMonotonicAndReachesOneHundredOnlyAfterAllAssets() throws Exception {
+    void progressIsMonotonicAndReservesOneHundredForTheTerminalTransition() throws Exception {
         when(assetService.beginGeneration(eq(subSceneId), any(), eq(revision.id()))).thenAnswer(invocation -> {
             AssetType type = invocation.getArgument(1);
             return asset(UUID.randomUUID(), type, 1);
@@ -238,8 +238,8 @@ class AssetGenerationJobHandlerTest {
         assertThat(values).isSorted();
         assertThat(values.get(0)).as("first progress must not regress below the worker's reported value")
                 .isGreaterThanOrEqualTo(1);
-        assertThat(values.get(values.size() - 1)).isEqualTo(100);
-        assertThat(values.subList(0, values.size() - 1)).doesNotContain(100);
+        assertThat(values.get(values.size() - 1)).isEqualTo(99);
+        assertThat(values).doesNotContain(100);
     }
 
     @Test

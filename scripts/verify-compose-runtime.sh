@@ -102,8 +102,16 @@ readiness=$(docker exec "$api_id" wget -qO- \
 [ "$readiness" = UP ]
 
 migrations=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
-  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11');")
-[ "$migrations" = '1:true,2:true,3:true,4:true,5:true,6:true,7:true,8:true,9:true,10:true,11:true' ]
+  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11','12','13');")
+[ "$migrations" = '1:true,2:true,3:true,4:true,5:true,6:true,7:true,8:true,9:true,10:true,11:true,12:true,13:true' ]
+
+exploration_tables=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('exploration_session','exploration_material','exploration_candidate','exploration_candidate_material','exploration_acceptance','user_notification');")
+[ "$exploration_tables" = '6' ]
+
+agent_templates=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
+  "SELECT COUNT(*) FROM agent_role_template_version WHERE version=1;")
+[ "$agent_templates" = '7' ]
 
 knowledge_tables=$(docker exec "$postgres_id" psql -U "$KMP_DB_USER" -d "$KMP_DB_NAME" -Atc \
   "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('extraction_run','extraction_map_result','extraction_reduce_result','document_revision_projection','document_revision_source_ref');")
@@ -194,8 +202,8 @@ for secret_value in "$KMP_DB_PASSWORD" "$KMP_BOOTSTRAP_ADMIN_PASSWORD" "$KMP_MOD
   done
 done
 
-printf 'RUNTIME_OK readiness=%s migrations=%s knowledge_tables=%s admin=%s session_tables=%s login=%s session_rows=%s secure_cookies=true secret_leak=false\n' \
-  "$readiness" "$migrations" "$knowledge_tables" "$admin_state" "$session_tables" "$login_status" "$session_rows"
+printf 'RUNTIME_OK readiness=%s migrations=%s knowledge_tables=%s exploration_tables=%s agent_templates=%s admin=%s session_tables=%s login=%s session_rows=%s secure_cookies=true secret_leak=false\n' \
+  "$readiness" "$migrations" "$knowledge_tables" "$exploration_tables" "$agent_templates" "$admin_state" "$session_tables" "$login_status" "$session_rows"
 
 cleanup_runtime
 trap - 0 1 2 15

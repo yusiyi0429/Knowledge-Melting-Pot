@@ -4,6 +4,7 @@ import com.knowledgemeltingpot.workbench.application.error.ConflictException;
 import com.knowledgemeltingpot.workbench.application.error.NotFoundException;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRecord;
 import com.knowledgemeltingpot.workbench.application.port.IdempotencyRepository;
+import com.knowledgemeltingpot.workbench.application.port.ExplorationRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialRepository;
 import com.knowledgemeltingpot.workbench.application.port.MaterialSelection;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
@@ -37,6 +38,7 @@ public class MaterialService {
     private static final Duration PRESIGN_UPLOAD_TIMEOUT = Duration.ofMinutes(15);
 
     private final MaterialRepository materialRepository;
+    private final ExplorationRepository explorationRepository;
     private final SceneRepository sceneRepository;
     private final IdempotencyRepository idempotencyRepository;
     private final JobService jobService;
@@ -44,10 +46,12 @@ public class MaterialService {
     private final Optional<ObjectStoragePort> objectStorage;
     private final Clock clock;
 
-    public MaterialService(MaterialRepository materialRepository, SceneRepository sceneRepository,
+    public MaterialService(MaterialRepository materialRepository, ExplorationRepository explorationRepository,
+            SceneRepository sceneRepository,
             IdempotencyRepository idempotencyRepository, JobService jobService, AuditService auditService,
             Optional<ObjectStoragePort> objectStorage, Clock clock) {
         this.materialRepository = materialRepository;
+        this.explorationRepository = explorationRepository;
         this.sceneRepository = sceneRepository;
         this.idempotencyRepository = idempotencyRepository;
         this.jobService = jobService;
@@ -59,18 +63,31 @@ public class MaterialService {
     @Transactional
     public MaterialUploadIntentResult createUploadIntent(MaterialUploadCommand command, UUID actorId,
             String idempotencyKey, String traceId) {
-        if (command == null || command.roundId() == null || command.partition() == null
+        if (command == null || command.partition() == null
                 || command.shareScope() == null || actorId == null) {
-            throw new IllegalArgumentException("roundId, partition, and shareScope are required");
+            throw new IllegalArgumentException("partition and shareScope are required");
+        }
+        boolean stagedExploration = command.explorationSessionId() != null;
+        if (stagedExploration == (command.roundId() != null)) {
+            throw new IllegalArgumentException("exactly one of roundId or explorationSessionId is required");
+        }
+        if (stagedExploration && (command.partition() != MaterialPartition.SOURCE
+                || command.shareScope() != MaterialShareScope.ROUND || command.regulatorySource()
+                || !command.subSceneIds().isEmpty())) {
+            throw new IllegalArgumentException("exploration staging only accepts private SOURCE materials");
         }
         if (command.regulatorySource() && command.partition() == MaterialPartition.LABELED_HOLDOUT) {
             throw new IllegalArgumentException("holdout material cannot be a regulatory alignment source");
         }
         MaterialUploadPolicy.ValidatedUpload upload = MaterialUploadPolicy.validate(command.fileName(),
                 command.sizeBytes(), command.mediaType(), command.sha256());
-        ExtractionRound round = sceneRepository.findRound(command.roundId())
+        ExtractionRound round = stagedExploration ? null : sceneRepository.findRound(command.roundId())
                 .orElseThrow(() -> new NotFoundException("extraction round does not exist"));
-        List<SubScene> targetSubScenes = resolveTargets(round, command.subSceneIds(), command.shareScope());
+        if (stagedExploration && explorationRepository.find(command.explorationSessionId()).isEmpty()) {
+            throw new NotFoundException("exploration session does not exist");
+        }
+        List<SubScene> targetSubScenes = stagedExploration ? List.of()
+                : resolveTargets(round, command.subSceneIds(), command.shareScope());
         String requestHash = requestHash(command, upload, targetSubScenes);
         String normalizedKey = idempotencyKey == null ? "" : idempotencyKey.trim();
         if (!normalizedKey.isBlank() && (normalizedKey.length() < 8 || normalizedKey.length() > 128)) {
@@ -109,6 +126,9 @@ public class MaterialService {
                         command.partition(), command.shareScope(), command.regulatorySource(), true, now))
                 .toList();
         materialRepository.insertBindings(bindings);
+        if (stagedExploration && !explorationRepository.linkMaterial(command.explorationSessionId(), material.id(), now)) {
+            throw new ConflictException("exploration session no longer accepts staged materials");
+        }
 
         MaterialUploadIntent intent;
         List<ObjectStoragePort.PresignedPart> presignedParts;
@@ -137,13 +157,16 @@ public class MaterialService {
             capabilityStatus = "OBJECT_STORAGE_NOT_CONFIGURED";
             messageCode = "material.upload.object-storage-not-configured";
         }
-        auditService.record(actorId, "MATERIAL_UPLOAD_INTENT_CREATED", "MATERIAL", material.id(), Map.of(
-                "roundId", round.id(),
-                "format", material.format(),
-                "sizeBytes", material.sizeBytes(),
-                "partition", command.partition(),
-                "shareScope", command.shareScope(),
-                "objectStorageConfigured", configured), traceId);
+        Map<String, Object> auditDetails = new java.util.LinkedHashMap<>();
+        if (round != null) auditDetails.put("roundId", round.id());
+        if (stagedExploration) auditDetails.put("explorationSessionId", command.explorationSessionId());
+        auditDetails.put("format", material.format());
+        auditDetails.put("sizeBytes", material.sizeBytes());
+        auditDetails.put("partition", command.partition());
+        auditDetails.put("shareScope", command.shareScope());
+        auditDetails.put("objectStorageConfigured", configured);
+        auditService.record(actorId, "MATERIAL_UPLOAD_INTENT_CREATED", "MATERIAL", material.id(),
+                auditDetails, traceId);
         return new MaterialUploadIntentResult(intent, material, bindings, false, configured, uploadMode,
                 capabilityStatus, messageCode, presignedParts);
     }
@@ -341,7 +364,9 @@ public class MaterialService {
                 .collect(java.util.stream.Collectors.joining(","));
         return Hashes.sha256(String.join("\n",
                 upload.fileName(), Long.toString(upload.sizeBytes()), upload.mediaType(), upload.sha256(),
-                command.roundId().toString(), targetIds, command.partition().name(), command.shareScope().name(),
+                command.roundId() == null ? "" : command.roundId().toString(),
+                command.explorationSessionId() == null ? "" : command.explorationSessionId().toString(),
+                targetIds, command.partition().name(), command.shareScope().name(),
                 Boolean.toString(command.regulatorySource())));
     }
 

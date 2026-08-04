@@ -134,7 +134,7 @@ class AgentExtractionJobHandlerTest {
 
     private ExtractionRun run(Job job) {
         return new ExtractionRun(UUID.randomUUID(), job.id(), job.aggregateId(), job.aggregateId(), UUID.randomUUID(),
-                null, null, UUID.randomUUID(), UUID.randomUUID(), "a".repeat(64), ExtractionRun.Stage.FROZEN,
+                null, null, UUID.randomUUID(), UUID.randomUUID(), null, null, "a".repeat(64), ExtractionRun.Stage.FROZEN,
                 job.requestedBy(), NOW, NOW);
     }
 

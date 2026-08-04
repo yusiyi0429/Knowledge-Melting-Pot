@@ -132,8 +132,8 @@ public class JobController {
 
     public record ExtractionJobRequest(
             @NotNull UUID roundId,
-            @NotNull UUID modelConfigVersionId,
-            @NotNull UUID skillVersionId) {
+            UUID modelConfigVersionId,
+            UUID skillVersionId) {
     }
 
     public record JobAcceptedResponse(UUID jobId, String statusUrl, String eventsUrl, String status) {

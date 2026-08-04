@@ -6,7 +6,6 @@ import com.knowledgemeltingpot.workbench.agent.AgentExecutionMode;
 import com.knowledgemeltingpot.workbench.agent.AgentExecutionRequest;
 import com.knowledgemeltingpot.workbench.agent.AgentExecutionResult;
 import com.knowledgemeltingpot.workbench.agent.AgentExecutionStatus;
-import com.knowledgemeltingpot.workbench.agent.KnowledgeExtractionPort;
 import com.knowledgemeltingpot.workbench.application.port.KnowledgeExtractionWorkflowPort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -14,10 +13,10 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnProperty(name = "workbench.agent.enabled", havingValue = "true")
 public class AgentKnowledgeExtractionWorkflowAdapter implements KnowledgeExtractionWorkflowPort {
-    private final KnowledgeExtractionPort agent;
+    private final VersionedAgentExecutor agent;
     private final ObjectMapper objectMapper;
 
-    public AgentKnowledgeExtractionWorkflowAdapter(KnowledgeExtractionPort agent, ObjectMapper objectMapper) {
+    public AgentKnowledgeExtractionWorkflowAdapter(VersionedAgentExecutor agent, ObjectMapper objectMapper) {
         this.agent = agent;
         this.objectMapper = objectMapper;
     }
@@ -36,7 +35,8 @@ public class AgentKnowledgeExtractionWorkflowAdapter implements KnowledgeExtract
                 来源正文：
                 %s
                 """.formatted(request.sourceRefCode(), request.locator(), request.content());
-        return execute(request.runId().toString() + ":map:" + request.sourceRefCode(), prompt);
+        return execute(request.modelConfigVersionId(), request.skillVersionId(),
+                request.runId().toString() + ":map:" + request.sourceRefCode(), prompt);
     }
 
     @Override
@@ -49,13 +49,14 @@ public class AgentKnowledgeExtractionWorkflowAdapter implements KnowledgeExtract
                 Map 结果：
                 %s
                 """.formatted(toJson(request.mapResults()));
-        return execute(request.runId().toString() + ":reduce", prompt);
+        return execute(request.modelConfigVersionId(), request.skillVersionId(),
+                request.runId().toString() + ":reduce", prompt);
     }
 
-    private KnowledgeDraft execute(String sessionId, String prompt) {
-        AgentExecutionResult result = agent.stream(new AgentExecutionRequest(
-                sessionId, "system", prompt, AgentExecutionMode.WORKFLOW), ignored -> {
-                });
+    private KnowledgeDraft execute(java.util.UUID modelConfigVersionId, java.util.UUID skillVersionId,
+            String sessionId, String prompt) {
+        AgentExecutionResult result = agent.stream(modelConfigVersionId, skillVersionId, new AgentExecutionRequest(
+                sessionId, "system", prompt, AgentExecutionMode.WORKFLOW), ignored -> { });
         if (result.status() != AgentExecutionStatus.COMPLETED) {
             throw new WorkflowGenerationException(result.failureCode().isBlank()
                     ? result.status().name() : result.failureCode());

@@ -9,6 +9,7 @@ import {
   createSubScene,
   generateAssets,
   getCurrentUser,
+  getEvaluationRun,
   getJob,
   getSkill,
   getKnowledgeDocument,
@@ -16,6 +17,7 @@ import {
   getReleaseManifest,
   getScene,
   listDocumentRevisions,
+  listEvaluationRuns,
   listAlignmentProposals,
   listExtractionRounds,
   listModelConfigVersions,
@@ -27,6 +29,7 @@ import {
   saveKnowledgeDocument,
   startAlignment,
   startExtraction,
+  startReleaseEvaluation,
   updateScene,
   validateRelease,
 } from "../lib/api";
@@ -38,6 +41,9 @@ import type {
   AssetType,
   AuthenticatedUser,
   DocumentRevisionSummary,
+  EvaluationAccepted,
+  EvaluationDetail,
+  EvaluationRun,
   ExtractionRound,
   ExtractionRoundStatus,
   Job,
@@ -68,6 +74,14 @@ const ROUND_STATUS_LABELS: Record<ExtractionRoundStatus, string> = {
   READY: "就绪",
   FAILED: "失败",
   SUPERSEDED: "已取代",
+};
+
+const EVALUATION_STATUS_LABELS: Record<EvaluationRun["status"], string> = {
+  QUEUED: "排队中",
+  RUNNING: "评测中",
+  SUCCEEDED: "已完成",
+  FAILED: "失败",
+  CANCELLED: "已取消",
 };
 
 function fieldErrorsToRecord(errors: ApiError["errors"]): Record<string, string> {
@@ -229,8 +243,15 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [publishing, setPublishing] = useState(false);
   const [released, setReleased] = useState<Release | null>(null);
   const [manifest, setManifest] = useState<string | null>(null);
+  const [evaluationRuns, setEvaluationRuns] = useState<EvaluationRun[]>([]);
+  const [evaluationDetail, setEvaluationDetail] = useState<EvaluationDetail | null>(null);
+  const [evaluationJob, setEvaluationJob] = useState<EvaluationAccepted | null>(null);
+  const [evaluationJobStatus, setEvaluationJobStatus] = useState<Job | null>(null);
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
+  const [evaluating, setEvaluating] = useState(false);
   const jobTimer = useRef<number | null>(null);
   const workflowTimer = useRef<number | null>(null);
+  const evaluationTimer = useRef<number | null>(null);
   const selectedSubsceneRef = useRef<string | null>(selectedSubsceneId);
 
   useEffect(() => {
@@ -247,14 +268,25 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
       window.clearTimeout(workflowTimer.current);
       workflowTimer.current = null;
     }
+    if (evaluationTimer.current !== null) {
+      window.clearTimeout(evaluationTimer.current);
+      evaluationTimer.current = null;
+    }
     setGeneratingTypes(null);
     setExtracting(false);
     setAligning(false);
+    setEvaluating(false);
+    setEvaluationRuns([]);
+    setEvaluationDetail(null);
+    setEvaluationJob(null);
+    setEvaluationJobStatus(null);
+    setEvaluationError(null);
   }, [selectedSubsceneId]);
 
   useEffect(() => () => {
     if (jobTimer.current !== null) window.clearTimeout(jobTimer.current);
     if (workflowTimer.current !== null) window.clearTimeout(workflowTimer.current);
+    if (evaluationTimer.current !== null) window.clearTimeout(evaluationTimer.current);
   }, []);
 
   useEffect(() => {
@@ -429,6 +461,28 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   useEffect(() => {
     if (step === 3) void loadReleaseBaseline();
   }, [step, loadReleaseBaseline]);
+
+  const loadEvaluations = useCallback(async () => {
+    if (!latestRelease || !selectedSubsceneId) {
+      setEvaluationRuns([]);
+      setEvaluationDetail(null);
+      return;
+    }
+    setEvaluationError(null);
+    try {
+      const runs = await listEvaluationRuns(latestRelease.id, selectedSubsceneId);
+      setEvaluationRuns(runs);
+      setEvaluationDetail(runs[0] ? await getEvaluationRun(runs[0].id) : null);
+    } catch (reason) {
+      setEvaluationRuns([]);
+      setEvaluationDetail(null);
+      setEvaluationError(reason instanceof ApiError ? reason.message : "无法读取评测记录。");
+    }
+  }, [latestRelease, selectedSubsceneId]);
+
+  useEffect(() => {
+    if (step === 3) void loadEvaluations();
+  }, [step, loadEvaluations]);
 
   const isDirty = documentMissing
     ? editorContent.trim().length > 0
@@ -639,6 +693,12 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const canPublish = Boolean(
     currentUser && (currentUser.roles.includes("PUBLISHER") || currentUser.roles.includes("ADMIN")),
   );
+  const canEvaluate = Boolean(
+    currentUser && (currentUser.roles.includes("OPERATOR") || currentUser.roles.includes("ADMIN")),
+  );
+  const readyHoldoutCount = (materials ?? []).filter((material) =>
+    material.status === "READY" && material.binding.partition === "LABELED_HOLDOUT" && material.binding.active).length;
+  const activeEvaluation = evaluationDetail?.run ?? evaluationRuns[0] ?? null;
 
   const releaseFingerprint = () =>
     `${releaseTag.trim()}|${releaseNote.trim()}|${[...releaseSelected].sort().join(",")}|${releaseConfirmed}`;
@@ -694,10 +754,65 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
       setValidation(null);
       setValidatedFingerprint(null);
       setLatestRelease(created);
+      setEvaluationRuns([]);
+      setEvaluationDetail(null);
     } catch (reason) {
       setReleaseError(reason instanceof ApiError ? reason.message : "发布失败。");
     } finally {
       setPublishing(false);
+    }
+  };
+
+  const pollEvaluationJob = (accepted: EvaluationAccepted, pollingSubScene: string) => {
+    const tick = async () => {
+      try {
+        const status = await getJob(accepted.jobId);
+        if (selectedSubsceneRef.current !== pollingSubScene) return;
+        setEvaluationJobStatus(status);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(status.status)) {
+          if (evaluationTimer.current !== null) {
+            window.clearTimeout(evaluationTimer.current);
+            evaluationTimer.current = null;
+          }
+          setEvaluating(false);
+          try {
+            setEvaluationDetail(await getEvaluationRun(accepted.evaluationRunId));
+            if (latestRelease && selectedSubsceneRef.current === pollingSubScene) {
+              setEvaluationRuns(await listEvaluationRuns(latestRelease.id, pollingSubScene));
+            }
+          } catch (reason) {
+            setEvaluationError(reason instanceof ApiError ? reason.message : "无法读取评测证据。");
+          }
+          if (status.status !== "SUCCEEDED") {
+            setEvaluationError(`评测任务未完成：${status.errorCode ?? status.status}`);
+          }
+          return;
+        }
+        evaluationTimer.current = window.setTimeout(() => void tick(), 1500);
+      } catch (reason) {
+        setEvaluating(false);
+        setEvaluationError(reason instanceof ApiError ? reason.message : "无法读取评测任务状态。");
+      }
+    };
+    void tick();
+  };
+
+  const runEvaluation = async () => {
+    if (!latestRelease || !selectedSubsceneId || !currentRoundId || evaluating) return;
+    const evaluationSubSceneId = selectedSubsceneId;
+    setEvaluating(true);
+    setEvaluationError(null);
+    setEvaluationJob(null);
+    setEvaluationJobStatus(null);
+    try {
+      const accepted = await startReleaseEvaluation(latestRelease.id, selectedSubsceneId,
+        currentRoundId, crypto.randomUUID());
+      if (selectedSubsceneRef.current !== evaluationSubSceneId) return;
+      setEvaluationJob(accepted);
+      pollEvaluationJob(accepted, evaluationSubSceneId);
+    } catch (reason) {
+      setEvaluating(false);
+      setEvaluationError(reason instanceof ApiError ? reason.message : "发起留出集评测失败。");
     }
   };
 
@@ -1289,6 +1404,105 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                           </div>
                         ) : null}
                       </div>
+                    )}
+                  </section>
+
+                  <section className="evaluation-panel" aria-labelledby="evaluation-panel-title">
+                    <header className="evaluation-panel__head">
+                      <div>
+                        <span className="evaluation-mark"><Glyph name="check" size={18} /></span>
+                        <div>
+                          <span className="eyebrow">RELEASE EVIDENCE</span>
+                          <h3 id="evaluation-panel-title">真实留出集评测</h3>
+                          <p>固定 Release、QA_EVALUATOR、Skill 与 Holdout case 集后执行；只有成功完成才显示准确率。</p>
+                        </div>
+                      </div>
+                      <Button className="button--primary button--small"
+                        disabled={!canEvaluate || !latestRelease || !currentRoundId || readyHoldoutCount === 0 || evaluating}
+                        onClick={() => void runEvaluation()}>
+                        {evaluating ? "评测中…" : activeEvaluation ? "重新评测" : "运行评测"}
+                      </Button>
+                    </header>
+
+                    {!latestRelease || readyHoldoutCount === 0 ? (
+                      <div className="evaluation-prerequisite" role="note">
+                        <Glyph name="warning" size={14} />
+                        <span>{!latestRelease
+                          ? "请先发布包含五类 READY 资产的场景快照。"
+                          : "当前轮次没有 READY 的 LABELED_HOLDOUT 素材，不能运行或显示评测指标。"}</span>
+                      </div>
+                    ) : null}
+                    {evaluationError ? <div className="form-error" role="alert">{evaluationError}</div> : null}
+                    {evaluationJob ? (
+                      <div className="job-strip evaluation-job" aria-live="polite">
+                        <div className={`job-strip__pulse job-strip__pulse--${evaluationJobStatus?.status === "SUCCEEDED" ? "closed" : "open"}`} />
+                        <div><b>评测任务 {evaluationJob.jobId}</b><small>{evaluationJobStatus?.status ?? evaluationJob.status} · {evaluationJobStatus?.percent ?? 0}%</small></div>
+                        <progress className="job-strip__progress" max={100} value={evaluationJobStatus?.percent ?? 0} aria-label="评测任务进度" />
+                        <strong>{evaluationJobStatus?.percent ?? 0}%</strong>
+                      </div>
+                    ) : null}
+
+                    {activeEvaluation ? (
+                      <div className="evaluation-evidence">
+                        <div className="evaluation-evidence__rail" aria-label="评测证据链">
+                          <article>
+                            <span>01 · RELEASE</span>
+                            <b>{latestRelease?.tag ?? "—"}</b>
+                            <code>{latestRelease?.manifestSha256.slice(0, 12) ?? "—"}…</code>
+                          </article>
+                          <span className="evaluation-evidence__connector" aria-hidden="true">→</span>
+                          <article>
+                            <span>02 · SEALED HOLDOUT</span>
+                            <b>{activeEvaluation.totalCases || "—"} cases</b>
+                            <code>{activeEvaluation.caseSetHash ? `${activeEvaluation.caseSetHash.slice(0, 12)}…` : "冻结中"}</code>
+                          </article>
+                          <span className="evaluation-evidence__connector" aria-hidden="true">→</span>
+                          <article>
+                            <span>03 · RESULTS</span>
+                            <b>{activeEvaluation.passedCases} pass / {activeEvaluation.failedCases + activeEvaluation.errorCases} fail</b>
+                            <Status tone={activeEvaluation.status === "SUCCEEDED" ? "success"
+                              : activeEvaluation.status === "FAILED" ? "danger"
+                              : activeEvaluation.status === "CANCELLED" ? "warning" : "info"}>
+                              {EVALUATION_STATUS_LABELS[activeEvaluation.status]}
+                            </Status>
+                          </article>
+                          <article className="evaluation-evidence__metric">
+                            <span>ACCURACY</span>
+                            <strong>{activeEvaluation.status === "SUCCEEDED" && activeEvaluation.accuracy !== null
+                              ? `${(activeEvaluation.accuracy * 100).toFixed(1)}%` : "—"}</strong>
+                            <small>{activeEvaluation.status === "SUCCEEDED" ? "真实 Holdout 结果" : "完成后回流"}</small>
+                          </article>
+                        </div>
+
+                        {activeEvaluation.failureCode ? (
+                          <div className="evaluation-prerequisite" role="alert">
+                            <Glyph name="warning" size={14} /> {activeEvaluation.failureCode}
+                          </div>
+                        ) : null}
+                        {evaluationDetail?.cases.length ? (
+                          <div className="evaluation-cases" role="table" aria-label="评测用例证据">
+                            <div className="evaluation-cases__row evaluation-cases__head" role="row">
+                              <span role="columnheader">Case / 来源</span>
+                              <span role="columnheader">输入</span>
+                              <span role="columnheader">期望 → 预测</span>
+                              <span role="columnheader">结果</span>
+                            </div>
+                            {evaluationDetail.cases.map((item) => (
+                              <div className="evaluation-cases__row" role="row" key={item.id}>
+                                <span role="cell"><b>{item.caseKey}</b><code>{item.sourceRefCode}</code></span>
+                                <span role="cell">{item.input}</span>
+                                <span role="cell"><b>{item.expected}</b><i aria-hidden="true">→</i><b>{item.prediction ?? "—"}</b></span>
+                                <span role="cell"><Status tone={item.outcome === "PASSED" ? "success"
+                                  : item.outcome === "ERROR" ? "danger" : item.outcome === "FAILED" ? "warning" : "neutral"}>
+                                  {item.outcome ?? "PENDING"}
+                                </Status></span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <EmptyState title="还没有评测证据" detail="发布后使用隔离留出集运行评测；平台不会展示模拟准确率。" />
                     )}
                   </section>
                 </>

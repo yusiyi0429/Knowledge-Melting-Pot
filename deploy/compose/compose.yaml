@@ -16,6 +16,53 @@ services:
       retries: 20
     networks: [backend]
 
+  evaluation-worker:
+    profiles: [evaluation]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker.Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: compose
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${KMP_DB_NAME:-knowledge_melting_pot}
+      SPRING_DATASOURCE_USERNAME: ${KMP_DB_USER:-kmp}
+      SPRING_DATASOURCE_PASSWORD: ${KMP_DB_PASSWORD:-kmp-local-only}
+      SPRING_FLYWAY_ENABLED: "false"
+      WORKBENCH_WORKER_ID: evaluation-worker-${HOSTNAME:-local}
+      WORKBENCH_WORKER_MAX_CONCURRENCY: ${KMP_EVALUATION_CONCURRENCY:-2}
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "EVALUATE"
+      KMP_AGENT_ENABLED: ${KMP_EVALUATION_AGENT_ENABLED:-false}
+      KMP_AGENT_TEST_STUB_ENABLED: ${KMP_EVALUATION_TEST_STUB_ENABLED:-false}
+      KMP_SKILL_SANDBOX_ENABLED: ${KMP_SKILL_SANDBOX_ENABLED:-false}
+      KMP_SKILL_SANDBOX_URL: http://skill-sandbox:8081/v1/execute
+      KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
+      KMP_ALLOWED_MODEL_HOSTS: ${KMP_ALLOWED_MODEL_HOSTS:-api.openai.com,dashscope.aliyuncs.com}
+    secrets: [kmp_model_master_key]
+    depends_on:
+      api: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    stop_grace_period: 45s
+    networks: [backend, edge, sandbox]
+
+  skill-sandbox:
+    profiles: [skill-sandbox]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/sandbox.Dockerfile
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.50
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    healthcheck:
+      test: ["CMD", "python", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [sandbox]
+
   minio:
     image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address :9001
@@ -117,7 +164,7 @@ services:
       WORKBENCH_CONTENT_CLAMAV_HOST: clamav
       WORKBENCH_CONTENT_CLAMAV_PORT: "3310"
       WORKBENCH_MATERIAL_INGEST_ENABLED: "true"
-      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST,EXTRACT,REEXTRACT,ALIGN,GENERATE_ASSET,GENERATE_ALL"
+      WORKBENCH_WORKER_ACCEPTED_TYPES: "INGEST,EXTRACT,REEXTRACT,ALIGN,GENERATE_ASSET,GENERATE_ALL,SCENE_EXPLORE"
       KMP_AGENT_ENABLED: "false"
       KMP_AGENT_TEST_STUB_ENABLED: ${KMP_AGENT_TEST_STUB_ENABLED:-false}
       KMP_MODEL_MASTER_KEY_FILE: /run/secrets/kmp_model_master_key
@@ -130,7 +177,7 @@ services:
       minio-init: { condition: service_completed_successfully }
       clamav: { condition: service_healthy }
     stop_grace_period: 45s
-    networks: [backend]
+    networks: [backend, edge]
 
   web:
     build:
@@ -151,6 +198,8 @@ networks:
   backend:
     internal: true
   edge:
+  sandbox:
+    internal: true
 
 secrets:
   kmp_bootstrap_admin_password:

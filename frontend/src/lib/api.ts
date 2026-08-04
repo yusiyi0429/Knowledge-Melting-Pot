@@ -88,6 +88,22 @@ async function mutateWithCsrf(path: string, method: "POST" | "PUT" | "PATCH" | "
   });
 }
 
+async function mutateWithCsrfHeaders(
+  path: string,
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  body: unknown,
+  extraHeaders: Record<string, string>,
+): Promise<Response> {
+  const token = await csrf();
+  return fetch(path, {
+    method,
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", [token.headerName]: token.token, ...extraHeaders },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function getCurrentUser(): Promise<AuthenticatedUser> {
   return getJson("/api/v1/auth/me", "已登录，但无法读取当前账号。");
 }
@@ -229,6 +245,186 @@ export async function createModelConfigVersion(
     "创建配置版本失败。",
   );
   return (await response.json()) as ModelConfigVersion;
+}
+
+export type AgentRole =
+  | "SCENE_EXPLORER"
+  | "KNOWLEDGE_EXTRACTOR"
+  | "ALIGNMENT_REVIEWER"
+  | "RULE_CATALOG_GENERATOR"
+  | "DECISION_FLOW_GENERATOR"
+  | "SKILL_PACKAGER"
+  | "QA_EVALUATOR";
+
+export type AgentMountScope = "GLOBAL" | "SCENE" | "SUB_SCENE";
+
+export interface AgentRoleDefinition {
+  role: AgentRole;
+  displayName: string;
+  stage: string;
+  description: string;
+}
+
+export interface AgentMountVersion {
+  id: string;
+  role: AgentRole;
+  scope: AgentMountScope;
+  scopeId: string | null;
+  version: number;
+  templateVersionId: string | null;
+  enabled: boolean | null;
+  modelConfigVersionId: string | null;
+  skillVersionId: string | null;
+  optionsJson: string | null;
+  configHash: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface AgentScopeConfiguration {
+  scope: AgentMountScope;
+  scopeId: string | null;
+  sceneId: string | null;
+  etag: string;
+  mounts: AgentMountVersion[];
+}
+
+export interface EffectiveAgentConfiguration {
+  role: AgentRole;
+  displayName: string;
+  stage: string;
+  enabled: boolean;
+  configured: boolean;
+  modelConfigVersionId: string | null;
+  skillVersionId: string | null;
+  optionsJson: string;
+  effectiveHash: string;
+  effectiveMountVersionId: string | null;
+  enabledSource: AgentMountScope | null;
+  modelSource: AgentMountScope | null;
+  skillSource: AgentMountScope | null;
+  optionsSource: AgentMountScope | "TEMPLATE" | null;
+  lineage: AgentMountVersion[];
+}
+
+export interface AgentModelCatalogEntry {
+  versionId: string;
+  connectionId: string;
+  connectionName: string;
+  provider: string;
+  version: number;
+  modelId: string;
+  temperature: number;
+  maxOutputTokens: number;
+}
+
+export interface AgentSkillCatalogEntry {
+  versionId: string;
+  skillId: string;
+  name: string;
+  kind: "TEMPLATE" | "INSTANCE";
+  sceneId: string | null;
+  version: number;
+  packageHash: string;
+}
+
+export interface AgentConfigurationCatalog {
+  models: AgentModelCatalogEntry[];
+  skills: AgentSkillCatalogEntry[];
+}
+
+export interface AgentMountDraft {
+  role: AgentRole;
+  enabled: boolean | null;
+  modelConfigVersionId: string | null;
+  skillVersionId: string | null;
+  options: Record<string, unknown> | null;
+}
+
+export interface ConfigurationImportPreview {
+  id: string;
+  schemaVersion: string;
+  scope: AgentMountScope;
+  scopeId: string | null;
+  sceneId: string | null;
+  baseEtag: string;
+  manifestJson: string;
+  manifestHash: string;
+  diffJson: string;
+  createdBy: string;
+  createdAt: string;
+  appliedBy: string | null;
+  appliedAt: string | null;
+  applied: boolean;
+}
+
+export async function listAgentRoles(): Promise<AgentRoleDefinition[]> {
+  return getJson("/api/v1/agent-roles", "无法读取智能体角色。 ");
+}
+
+export async function getAgentScope(scope: AgentMountScope, scopeId: string | null): Promise<AgentScopeConfiguration> {
+  const query = new URLSearchParams({ scope });
+  if (scopeId) query.set("scopeId", scopeId);
+  return getJson(`/api/v1/agent-mounts?${query}`, "无法读取作用域配置。");
+}
+
+export async function getEffectiveAgentConfigurations(
+  sceneId: string,
+  subSceneId: string | null,
+): Promise<EffectiveAgentConfiguration[]> {
+  const query = new URLSearchParams({ sceneId });
+  if (subSceneId) query.set("subSceneId", subSceneId);
+  return getJson(`/api/v1/agent-mounts/effective?${query}`, "无法解析有效智能体配置。");
+}
+
+export async function getAgentConfigurationCatalog(): Promise<AgentConfigurationCatalog> {
+  return getJson("/api/v1/agent-configuration-catalog", "无法读取模型与 Skill 版本目录。");
+}
+
+export async function appendAgentMount(
+  scope: AgentMountScope,
+  scopeId: string | null,
+  etag: string,
+  draft: AgentMountDraft,
+): Promise<AgentScopeConfiguration> {
+  const response = await requireSuccess(
+    await mutateWithCsrfHeaders(
+      "/api/v1/agent-mounts/versions",
+      "POST",
+      { scope, scopeId, ...draft },
+      { "If-Match": etag },
+    ),
+    "保存智能体配置版本失败。",
+  );
+  return (await response.json()) as AgentScopeConfiguration;
+}
+
+export async function previewConfigurationImport(
+  scope: AgentMountScope,
+  scopeId: string | null,
+  roles: AgentMountDraft[],
+): Promise<ConfigurationImportPreview> {
+  const response = await requireSuccess(
+    await postWithCsrf("/api/v1/configuration-imports/previews", { scope, scopeId, roles }),
+    "配置导入校验失败。",
+  );
+  return (await response.json()) as ConfigurationImportPreview;
+}
+
+export async function applyConfigurationImport(
+  importId: string,
+  manifestHash: string,
+): Promise<AgentScopeConfiguration> {
+  const response = await requireSuccess(
+    await mutateWithCsrfHeaders(
+      `/api/v1/configuration-imports/${importId}/apply`,
+      "POST",
+      {},
+      { "If-Match": manifestHash },
+    ),
+    "应用配置导入失败。",
+  );
+  return (await response.json()) as AgentScopeConfiguration;
 }
 
 export type UserRole = "OPERATOR" | "PUBLISHER" | "ADMIN";
@@ -429,11 +625,169 @@ export interface CreateUploadIntentDraft {
   sizeBytes: number;
   mediaType: string;
   sha256: string;
-  roundId: string;
+  roundId?: string | null;
+  explorationSessionId?: string;
   subSceneIds: string[];
   partition: MaterialPartition;
   shareScope: MaterialShareScope;
   regulatorySource: boolean;
+}
+
+export type ExplorationStatus = "DRAFT" | "ANALYZING" | "READY" | "ACCEPTED" | "FAILED" | "CANCELLED";
+
+export interface ExplorationSession {
+  id: string;
+  title: string;
+  status: ExplorationStatus;
+  exploreJobId: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExplorationMaterial {
+  id: string;
+  fileName: string;
+  format: "PDF" | "DOCX" | "XLSX" | "TXT";
+  sizeBytes: number;
+  status: MaterialStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExplorationCandidate {
+  id: string;
+  rank: number;
+  sceneName: string;
+  sceneDescription: string;
+  subSceneName: string;
+  subSceneDescription: string;
+  rationale: string;
+  valueLevel: "HIGH" | "MEDIUM" | "LOW";
+  estimatedRuleCount: number;
+  estimatedFlowCount: number;
+  tags: string[];
+  materialIds: string[];
+}
+
+export interface ExplorationAcceptance {
+  candidateId: string;
+  sceneId: string;
+  subSceneId: string;
+  roundId: string;
+  acceptedAt: string;
+}
+
+export interface ExplorationDetail {
+  session: ExplorationSession;
+  etag: string;
+  materials: ExplorationMaterial[];
+  candidates: ExplorationCandidate[];
+  acceptance: ExplorationAcceptance | null;
+}
+
+export interface ExplorationAcceptanceResult {
+  sceneId: string;
+  subSceneId: string;
+  roundId: string;
+  reusedMaterialIds: string[];
+}
+
+export async function listExplorations(): Promise<ExplorationSession[]> {
+  return getJson("/api/v1/explorations", "无法读取场景探索记录。");
+}
+
+export async function createExploration(title: string): Promise<ExplorationSession> {
+  const response = await requireSuccess(
+    await postWithCsrf("/api/v1/explorations", { title }),
+    "创建场景探索失败。",
+  );
+  return (await response.json()) as ExplorationSession;
+}
+
+export async function getExploration(id: string): Promise<ExplorationDetail> {
+  return getJson(`/api/v1/explorations/${id}`, "无法读取场景探索详情。");
+}
+
+export async function startExploration(id: string, idempotencyKey: string): Promise<JobAccepted> {
+  const token = await csrf();
+  const response = await requireSuccess(
+    await fetch(`/api/v1/explorations/${id}/analysis-jobs`, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, [token.headerName]: token.token },
+      body: "{}",
+    }),
+    "启动场景探索失败。",
+  );
+  return (await response.json()) as JobAccepted;
+}
+
+export async function acceptExplorationCandidate(
+  sessionId: string,
+  candidateId: string,
+  etag: string,
+): Promise<ExplorationAcceptanceResult> {
+  const response = await requireSuccess(
+    await mutateWithCsrfHeaders(
+      `/api/v1/explorations/${sessionId}/candidates/${candidateId}/accept`,
+      "POST",
+      {},
+      { "If-Match": etag },
+    ),
+    "接受候选场景失败。",
+  );
+  return (await response.json()) as ExplorationAcceptanceResult;
+}
+
+export interface SearchResult {
+  type: "SCENE" | "RULE" | "SOURCE";
+  sceneId: string;
+  subSceneId: string | null;
+  resourceId: string;
+  title: string;
+  excerpt: string;
+}
+
+export async function searchWorkbench(query: string, limit = 20): Promise<SearchResult[]> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return getJson(`/api/v1/search?${params}`, "搜索失败。");
+}
+
+export interface UserNotification {
+  id: string;
+  type: string;
+  title: string;
+  message: string;
+  resourceType: string;
+  resourceId: string;
+  createdAt: string;
+  readAt: string | null;
+  read: boolean;
+}
+
+export interface NotificationInbox {
+  unreadCount: number;
+  items: UserNotification[];
+}
+
+export async function getNotificationInbox(limit = 30): Promise<NotificationInbox> {
+  return getJson(`/api/v1/notifications?limit=${limit}`, "无法读取任务通知。");
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await requireSuccess(
+    await mutateWithCsrf(`/api/v1/notifications/${id}/read`, "PATCH"),
+    "更新通知失败。",
+  );
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await requireSuccess(
+    await mutateWithCsrf("/api/v1/notifications/read", "PATCH"),
+    "更新通知失败。",
+  );
 }
 
 export interface UploadedPart {
@@ -825,6 +1179,94 @@ export async function getLatestRelease(sceneId: string): Promise<Release | null>
   if (response.status === 404) return null;
   await requireSuccess(response, "无法读取发布基线。");
   return (await response.json()) as Release;
+}
+
+export type EvaluationStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+export type EvaluationOutcome = "PASSED" | "FAILED" | "ERROR";
+
+export interface EvaluationRun {
+  id: string;
+  releaseId: string;
+  subSceneId: string;
+  roundId: string;
+  documentRevisionId: string;
+  evaluationAssetId: string;
+  skillAssetId: string;
+  modelConfigVersionId: string;
+  skillVersionId: string;
+  jobId: string;
+  caseSetHash: string;
+  status: EvaluationStatus;
+  totalCases: number;
+  passedCases: number;
+  failedCases: number;
+  errorCases: number;
+  accuracy: number | null;
+  failureCode: string;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+}
+
+export interface EvaluationCase {
+  id: string;
+  ordinal: number;
+  caseKey: string;
+  input: string;
+  expected: string;
+  materialId: string;
+  chunkId: string;
+  sourceRefCode: string;
+  tags: string[];
+  prediction: string | null;
+  outcome: EvaluationOutcome | null;
+  errorCode: string | null;
+  latencyMillis: number | null;
+}
+
+export interface EvaluationDetail {
+  run: EvaluationRun;
+  cases: EvaluationCase[];
+}
+
+export interface EvaluationAccepted extends JobAccepted {
+  evaluationRunId: string;
+}
+
+export async function startReleaseEvaluation(
+  releaseId: string,
+  subSceneId: string,
+  roundId: string,
+  idempotencyKey: string,
+): Promise<EvaluationAccepted> {
+  const token = await csrf();
+  const response = await requireSuccess(
+    await fetch(`/api/v1/releases/${releaseId}/subscenes/${subSceneId}/evaluation-jobs`, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+        [token.headerName]: token.token,
+      },
+      body: JSON.stringify({ roundId }),
+    }),
+    "发起留出集评测失败。",
+  );
+  return (await response.json()) as EvaluationAccepted;
+}
+
+export async function listEvaluationRuns(releaseId: string, subSceneId: string): Promise<EvaluationRun[]> {
+  return getJson(
+    `/api/v1/releases/${releaseId}/subscenes/${subSceneId}/evaluation-runs`,
+    "无法读取评测记录。",
+  );
+}
+
+export async function getEvaluationRun(runId: string): Promise<EvaluationDetail> {
+  return getJson(`/api/v1/evaluation-runs/${runId}`, "无法读取评测证据。 ");
 }
 
 export interface AuditEvent {
