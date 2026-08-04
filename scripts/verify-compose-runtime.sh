@@ -74,6 +74,7 @@ api_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q api)
 worker_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q worker)
 postgres_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q postgres)
 minio_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q minio)
+web_id=$(docker compose -p "$verify_project" -f "$compose_file" ps -q web)
 
 verify_stage=runtime-readiness
 ready=false
@@ -187,6 +188,22 @@ api_ports=$(docker inspect "$api_id" --format '{{json .HostConfig.PortBindings}}
 worker_ports=$(docker inspect "$worker_id" --format '{{json .HostConfig.PortBindings}}')
 [ "$api_ports" = '{}' ]
 [ "$worker_ports" = '{}' ]
+verify_stage=container-hardening
+for container_id in "$api_id" "$worker_id"; do
+  [ "$(docker inspect "$container_id" --format '{{json .HostConfig.CapDrop}}')" = '["ALL"]' ]
+  [ "$(docker inspect "$container_id" --format '{{json .HostConfig.SecurityOpt}}')" = '["no-new-privileges:true"]' ]
+  [ "$(docker inspect "$container_id" --format '{{.Config.User}}')" = 10001 ]
+  [ -n "$(docker inspect "$container_id" --format '{{index .HostConfig.Tmpfs "/tmp"}}')" ]
+  docker exec "$container_id" sh -c 'test ! -e /home/kmp && test -w /tmp'
+done
+[ "$(docker inspect "$web_id" --format '{{json .HostConfig.CapDrop}}')" = '["ALL"]' ]
+[ "$(docker inspect "$web_id" --format '{{json .HostConfig.SecurityOpt}}')" = '["no-new-privileges:true"]' ]
+[ "$(docker inspect "$web_id" --format '{{.HostConfig.ReadonlyRootfs}}')" = true ]
+[ "$(docker inspect "$web_id" --format '{{.Config.User}}')" = nginx ]
+security_headers=$(curl -fsSI "$web_base_url/")
+printf '%s\n' "$security_headers" | rg -i --quiet '^x-content-type-options: nosniff\r?$'
+printf '%s\n' "$security_headers" | rg -i --quiet '^x-frame-options: DENY\r?$'
+printf '%s\n' "$security_headers" | rg -i --quiet "^content-security-policy: .*script-src 'self'.*frame-ancestors 'none'"
 verify_stage=secret-mounts
 docker exec "$api_id" sh -c \
   'test -s /run/secrets/workbench.bootstrap-admin.password && test -s /run/secrets/kmp_model_master_key'
@@ -202,7 +219,7 @@ for secret_value in "$KMP_DB_PASSWORD" "$KMP_BOOTSTRAP_ADMIN_PASSWORD" "$KMP_MOD
   done
 done
 
-printf 'RUNTIME_OK readiness=%s migrations=%s knowledge_tables=%s exploration_tables=%s agent_templates=%s admin=%s session_tables=%s login=%s session_rows=%s secure_cookies=true secret_leak=false\n' \
+printf 'RUNTIME_OK readiness=%s migrations=%s knowledge_tables=%s exploration_tables=%s agent_templates=%s admin=%s session_tables=%s login=%s session_rows=%s secure_cookies=true container_hardening=true secret_leak=false\n' \
   "$readiness" "$migrations" "$knowledge_tables" "$exploration_tables" "$agent_templates" "$admin_state" "$session_tables" "$login_status" "$session_rows"
 
 cleanup_runtime

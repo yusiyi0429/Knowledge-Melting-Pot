@@ -47,6 +47,7 @@ docker compose -p kmp-runtime-check \
 - API 默认设置 `KMP_SECURE_COOKIES=true`；正式部署必须在 Web 前提供 TLS 终止。
 - Worker 明确设置 `KMP_AGENT_ENABLED=false`。
 - Worker 默认启用受限 PDF OCR，并设置页数、像素、单页超时和输出字符预算。
+- API/Worker/Evaluation Worker 以 UID 10001 运行且没有可写 Home；Web 以 `nginx` 非 root 用户和只读根文件系统运行。相关服务统一移除 Linux capabilities、启用 `no-new-privileges`，并设置 PID、CPU、内存和有界 `tmpfs`。
 - API 是唯一 Flyway 迁移所有者；Worker 设置 `SPRING_FLYWAY_ENABLED=false`，并等待 API healthy 后启动。
 - PostgreSQL、MinIO、ClamAV、API 和 Worker 均未发布宿主机端口；只有 Web 在本地验证时发布 `8088`。
 
@@ -168,7 +169,27 @@ unset KMP_BOOTSTRAP_ADMIN_USERNAME KMP_BOOTSTRAP_ADMIN_PASSWORD KMP_MODEL_MASTER
 
 ## 最近一次本机证据
 
-2026-08-04 使用一次性 Secret 和独立项目 `kmp-runtime-check` 重新构建三张镜像并执行仓库脚本通过：输出 `RUNTIME_OK readiness=UP`，Flyway V1–V13 全部成功、存在七条角色模板及六张探索/通知相关表，初始管理员唯一且要求首次改密，XSRF 与 Session Cookie 均带 `Secure`，真实 CSRF 登录返回 204 并写入一条 Spring Session；Worker 稳定运行、Agent Runtime 与 Worker Flyway 均关闭、没有 `/app/logs`，API/Worker 无宿主端口，日志未命中三项一次性 Secret。验证结束后输出 `CLEANUP_OK containers=0 volumes=0`。
+2026-08-04 使用一次性 Secret 和独立项目 `kmp-runtime-check` 重新构建三张镜像并执行仓库脚本通过：输出 `RUNTIME_OK readiness=UP`，Flyway V1–V16 全部成功、存在七条角色模板及六张探索/通知相关表，初始管理员唯一且要求首次改密，XSRF 与 Session Cookie 均带 `Secure`，真实 CSRF 登录返回 204 并写入一条 Spring Session；Worker 稳定运行、Agent Runtime 与 Worker Flyway 均关闭、没有 `/app/logs`，API/Worker 无宿主端口，日志未命中三项一次性 Secret。容器门禁同时检查非 root、`cap_drop=ALL`、`no-new-privileges`、有界 `/tmp`、Web 只读根文件系统和 CSP/防点击劫持响应头。验证结束后输出 `CLEANUP_OK containers=0 volumes=0`。
+
+## 性能基线
+
+`scripts/verify-performance.sh` 使用独立项目 `kmp-performance-check` 和 JDK-only 有界负载器，不引入生产依赖。它通过最终 Nginx→API→PostgreSQL Session 路径请求 `/api/v1/auth/csrf`，默认 300 次、并发 16、错误率 0、p95 上限 1500 ms，并在结束后删除隔离容器和卷：
+
+```bash
+scripts/verify-performance.sh
+```
+
+2026-08-04 最终本机复测输出 `PERFORMANCE_RESULT requests=300 concurrency=16 failures=0 error_rate=0.0000 p50_ms=14 p95_ms=91 p99_ms=94 throughput_rps=387.91`，随后 `PERFORMANCE_OK` 与 `CLEANUP_OK containers=0 volumes=0`。该结果是单机平台基线，不代表模型供应商延迟、OCR 吞吐或生产容量规划；正式容量结论必须使用目标硬件和脱敏业务分布重新执行。
+
+## 备份恢复
+
+`scripts/backup-compose.sh` 在停止写入方后同步备份 PostgreSQL 与四个 MinIO Bucket，并生成 SHA-256 清单；`scripts/restore-compose.sh` 只接受全新空项目和显式确认。完整说明见 [Compose 备份与恢复](backup-restore.md)。
+
+```bash
+scripts/verify-backup-restore.sh
+```
+
+2026-08-04 隔离演练通过：非空项目首先被 `RESTORE_GUARD_OK` 拒绝且原数据保持完整；删除源项目后，数据库合成 Scene、MinIO 对象和恢复后 API readiness 均一致，校验和全部通过，源/目标项目的容器和卷最终均为 0。
 
 ## Embedding 与中文稠密检索
 

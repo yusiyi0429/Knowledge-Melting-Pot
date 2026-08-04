@@ -1,0 +1,13 @@
+# Isolated operations-verification overlay. It is only used by
+# scripts/verify-backup-restore.sh and must not be applied to a shared stack.
+name: knowledge-melting-pot-operations
+
+services:
+  minio:
+    ports: !override []
+
+  api:
+    image: knowledge-melting-pot-api:operations-check
+
+  web:
+    image: knowledge-melting-pot-web:operations-check

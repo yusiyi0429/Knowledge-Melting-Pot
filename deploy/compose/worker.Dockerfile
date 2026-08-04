@@ -8,7 +8,7 @@ FROM eclipse-temurin:21-jre
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd --system --uid 10001 --create-home kmp
+RUN useradd --system --uid 10001 --no-create-home --home-dir /nonexistent kmp
 WORKDIR /app
 COPY --from=build /workspace/backend/workbench-worker/target/workbench-worker-*.jar app.jar
 USER 10001

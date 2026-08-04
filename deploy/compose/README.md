@@ -1,12 +1,13 @@
 # Private single-host deployment
 
-This Compose stack is the pilot deployment baseline. It keeps PostgreSQL, MinIO and ClamAV on an internal network; only the Nginx frontend publishes a host port.
+This Compose stack is the pilot deployment baseline. PostgreSQL, ClamAV, API and Worker stay private. Nginx publishes the workbench port; MinIO publishes API/console ports on loopback only because the browser performs local presigned multipart uploads directly.
 
 ## Start
 
 ```bash
 cp .env.example .env
-# Set a unique bootstrap password and KMP_MODEL_MASTER_KEY from `openssl rand -base64 32`.
+# Replace every change-me value, set a unique bootstrap password, and generate
+# KMP_MODEL_MASTER_KEY with `openssl rand -base64 32`.
 docker compose --env-file .env -f deploy/compose/compose.yaml up --build
 ```
 
@@ -28,6 +29,19 @@ docker compose --env-file .env -f deploy/compose/compose.yaml \
 
 The sandbox publishes no host port, has no external network, receives no application secrets, and cannot run arbitrary uploaded scripts. Do not treat this profile as authorization for Shell, Python or binary Skill packages.
 
+## Operations gates
+
+Run the isolated performance and backup/restore gates before a production candidate is accepted:
+
+```bash
+scripts/verify-performance.sh
+scripts/verify-backup-restore.sh
+```
+
+The default performance gate sends 300 CSRF/Session requests at concurrency 16 through Nginx and enforces zero errors plus p95 ≤ 1500 ms. Tune the local acceptance budget with `KMP_PERFORMANCE_*`; keep the chosen budget version-controlled for a release.
+
+`backup-compose.sh` quiesces running Web/API/Worker processes, backs up PostgreSQL and all four MinIO buckets, creates `SHA256SUMS`, and restarts only the services it stopped. `restore-compose.sh` refuses an existing project and requires `KMP_RESTORE_CONFIRM=RESTORE_EMPTY_PROJECT`. See [Backup and restore](../../docs/operations/backup-restore.md).
+
 ## Production requirements
 
 - The model master key is mounted as a Docker secret; move database, MinIO, and bootstrap credentials
@@ -35,6 +49,7 @@ The sandbox publishes no host port, has no external network, receives no applica
 - Pin and mirror every image by digest after vulnerability review.
 - Keep the multi-architecture ClamAV Debian image on a reviewed 1.4.x patch release; the Alpine `clamav/clamav:1.4` tag does not provide an ARM64 manifest.
 - Terminate TLS before Nginx and keep secure session cookies enabled.
+- Keep API/Worker/Web as the non-root users built into their images. Compose drops all Linux capabilities, applies `no-new-privileges`, PID/resource limits and bounded `tmpfs`; Web and the Skill sandbox additionally use read-only root filesystems.
 - Back up PostgreSQL and object storage together; a release is recoverable only when both are restored to a consistent point.
 - Restrict `KMP_ALLOWED_MODEL_HOSTS` to reviewed model gateways.
 
@@ -44,7 +59,7 @@ workbench running, set `KMP_PROVIDER_E2E_PASSWORD` and at least one of
 `scripts/verify-model-providers.sh`. The script uses read-only authenticated probes, does not
 print credentials, and soft-deletes its temporary connections.
 - Configure object-store lifecycle policies for quarantine and failed uploads.
-- Do not expose PostgreSQL, MinIO, ClamAV, API or Worker ports to the host network.
+- Do not expose PostgreSQL, ClamAV, API or Worker ports to the host network. In the local-only browser-upload deployment, MinIO may be published only on `127.0.0.1`; use a reviewed TLS endpoint and corresponding CSP/CORS allowlist for any non-local deployment.
 
 The API and Worker are separate images so Worker concurrency can be changed without increasing HTTP replicas. Kubernetes manifests are intentionally outside the first deployment scope.
 

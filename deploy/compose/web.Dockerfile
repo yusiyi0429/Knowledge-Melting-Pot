@@ -22,4 +22,5 @@ RUN apk del \
     && apk upgrade --no-cache
 COPY deploy/compose/nginx.conf /etc/nginx/http.d/default.conf
 COPY --from=build /workspace/frontend/dist /usr/share/nginx/html
-EXPOSE 80
+USER nginx
+EXPOSE 8080

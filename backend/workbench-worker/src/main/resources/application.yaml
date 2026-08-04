@@ -26,12 +26,7 @@ workbench:
   agent:
     enabled: ${KMP_AGENT_ENABLED:false}
     test-stub-enabled: ${KMP_AGENT_TEST_STUB_ENABLED:false}
-    provider: ${KMP_AGENT_PROVIDER:OPENAI_COMPATIBLE}
-    model-name: ${KMP_AGENT_MODEL_NAME:}
-    api-base: ${KMP_AGENT_API_BASE:}
-    api-key: ${KMP_AGENT_API_KEY:}
     timeout: ${KMP_AGENT_TIMEOUT:PT1M}
-    temperature: ${KMP_AGENT_TEMPERATURE:0.2}
   skill-sandbox:
     enabled: ${KMP_SKILL_SANDBOX_ENABLED:false}
     url: ${KMP_SKILL_SANDBOX_URL:http://skill-sandbox:8081/v1/execute}

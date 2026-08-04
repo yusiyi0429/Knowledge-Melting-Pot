@@ -5,7 +5,7 @@ RUN --mount=type=cache,target=/root/.m2 \
     mvn -f backend/pom.xml -pl workbench-api -am package -DskipTests
 
 FROM eclipse-temurin:21-jre
-RUN useradd --system --uid 10001 --create-home kmp
+RUN useradd --system --uid 10001 --no-create-home --home-dir /nonexistent kmp
 WORKDIR /app
 COPY --from=build /workspace/backend/workbench-api/target/workbench-api-*.jar app.jar
 USER 10001

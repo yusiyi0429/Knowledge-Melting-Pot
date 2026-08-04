@@ -82,6 +82,11 @@ jobs:
         run: |
           docker run --rm --entrypoint tesseract knowledge-melting-pot-worker:ci --version
           docker run --rm --entrypoint tesseract knowledge-melting-pot-worker:ci --list-langs | grep -Fx chi_sim
+      - name: Verify web non-root configuration
+        if: matrix.service == 'web'
+        run: |
+          test "$(docker image inspect knowledge-melting-pot-web:ci --format '{{.Config.User}}')" = nginx
+          docker run --rm --add-host api:127.0.0.1 --entrypoint nginx knowledge-melting-pot-web:ci -t
       - name: Scan ${{ matrix.service }} image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
