@@ -53,6 +53,11 @@ class AssetContentFactoryTest {
         assertThat(first).containsExactly(second);
         Map<String, byte[]> files = unzip(first);
         assertThat(files).containsKeys("rules.json", "rules.xlsx");
+        String coreProperties = new String(unzip(files.get("rules.xlsx")).get("docProps/core.xml"),
+                StandardCharsets.UTF_8);
+        assertThat(coreProperties)
+                .contains("Knowledge-Melting-Pot")
+                .contains("2000-01-01T00:00:00Z");
     }
 
     @Test

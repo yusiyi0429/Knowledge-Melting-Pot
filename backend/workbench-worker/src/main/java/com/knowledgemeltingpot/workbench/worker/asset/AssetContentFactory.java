@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +22,6 @@ import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Component;
 
@@ -37,6 +37,8 @@ public final class AssetContentFactory {
     private static final Pattern ANCHOR = Pattern.compile("\\[SRC-[A-Za-z0-9_-]{1,100}]");
     /** Earliest DOS-representable zip timestamp (1980-01-01T00:00:00Z) for byte-stable bundles. */
     private static final long ZIP_ENTRY_TIME = 315532800000L;
+    /** Stable OOXML core-property timestamp; POI otherwise injects the current wall clock. */
+    private static final long XLSX_PROPERTY_TIME = 946684800000L;
 
     private final ObjectMapper objectMapper;
 
@@ -117,7 +119,12 @@ public final class AssetContentFactory {
     }
 
     private byte[] rulesXlsx(List<Map<String, Object>> rules) throws IOException {
-        try (Workbook workbook = new XSSFWorkbook()) {
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            var core = workbook.getProperties().getCoreProperties();
+            core.setCreator("Knowledge-Melting-Pot");
+            core.setLastModifiedByUser("Knowledge-Melting-Pot");
+            core.setCreated(java.util.Optional.of(new Date(XLSX_PROPERTY_TIME)));
+            core.setModified(java.util.Optional.of(new Date(XLSX_PROPERTY_TIME)));
             Sheet sheet = workbook.createSheet("规则清单");
             Row header = sheet.createRow(0);
             String[] columns = {"规则ID", "标题", "来源锚点", "优先级", "依据段落"};
