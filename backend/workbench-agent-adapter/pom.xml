@@ -32,6 +32,17 @@
                     <groupId>org.slf4j</groupId>
                     <artifactId>slf4j-simple</artifactId>
                 </exclusion>
+                <!-- The workbench uses PostgreSQL/pgvector directly and does not enable
+                     agent-core's Milvus or Pulsar storage adapters. Keeping those clients
+                     out of the Worker image avoids an unused network stack and its CVEs. -->
+                <exclusion>
+                    <groupId>io.milvus</groupId>
+                    <artifactId>milvus-sdk-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.pulsar</groupId>
+                    <artifactId>pulsar-client</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
 
