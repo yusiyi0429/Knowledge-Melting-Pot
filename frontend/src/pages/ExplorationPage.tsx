@@ -1,15 +1,20 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, EmptyState, Glyph, PageHeader, Status } from "../components/Ui";
+import { OperationReadinessNotice } from "../components/OperationReadinessNotice";
 import { useJobEvents } from "../hooks/useJobEvents";
 import {
   acceptExplorationCandidate,
   ApiError,
   createExploration,
+  deleteExploration,
+  getJob,
   getExploration,
+  getOperationReadiness,
   listExplorations,
+  retryJob,
   startExploration,
 } from "../lib/api";
-import type { ExplorationDetail, ExplorationSession } from "../lib/api";
+import type { ExplorationDetail, ExplorationSession, OperationReadiness } from "../lib/api";
 import { UploadMaterialDialog } from "./UploadMaterialDialog";
 
 const STATUS_LABEL: Record<ExplorationSession["status"], string> = {
@@ -19,6 +24,17 @@ const STATUS_LABEL: Record<ExplorationSession["status"], string> = {
   ACCEPTED: "已进入正式流程",
   FAILED: "探索未完成",
   CANCELLED: "已取消",
+};
+
+const FAILURE_MESSAGE: Record<string, string> = {
+  EXPLORATION_CANDIDATES_EMPTY: "模型没有返回可用候选，系统已完成一次格式修复尝试。",
+  EXPLORATION_CANDIDATE_LIMIT_EXCEEDED: "模型返回的候选数量超过 5 个。",
+  EXPLORATION_SOURCE_REFERENCE_INVALID: "候选引用了本次素材集合之外的来源。",
+  EXPLORATION_SOURCE_REFERENCE_MISSING: "候选没有引用任何可信素材。",
+  EXPLORATION_REQUIRED_FIELD_MISSING: "候选缺少场景名称、子场景名称或业务依据。",
+  EXPLORATION_FIELD_TOO_LONG: "候选字段超过平台允许的长度。",
+  EXPLORATION_VALUE_LEVEL_INVALID: "候选价值等级不符合约定。",
+  MODEL_JSON_INVALID: "模型没有返回可解析的结构化 JSON。",
 };
 
 function statusTone(status: ExplorationSession["status"]): "neutral" | "success" | "warning" | "danger" | "info" {
@@ -38,6 +54,66 @@ function formatTime(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function DeleteExplorationDialog({
+  session,
+  deleting,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  session: ExplorationSession;
+  deleting: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    if (!node.open) node.showModal();
+    return () => {
+      if (node.open) node.close();
+    };
+  }, []);
+
+  return (
+    <dialog ref={ref} className="scene-dialog scene-delete-dialog" aria-labelledby="exploration-delete-title"
+      onCancel={onClose}>
+      <div className="model-dialog__form">
+        <header className="model-dialog__head">
+          <div>
+            <h2 id="exploration-delete-title">删除探索记录</h2>
+            <p>记录会从探索账本移除，证据素材、任务事件和审计链路仍会保留。</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭" onClick={onClose} disabled={deleting}>
+            <Glyph name="close" size={16}/>
+          </button>
+        </header>
+        <div className="model-dialog__body scene-delete-dialog__body">
+          <div className="scene-delete-dialog__target">
+            <span>即将删除</span>
+            <strong>{session.title}</strong>
+            <code>EXP-{session.id}</code>
+          </div>
+          <div className="scene-delete-dialog__note">
+            <Glyph name="warning" size={17}/>
+            <p><b>不会物理擦除历史数据</b><span>已接受候选创建的正式场景不会受到影响。</span></p>
+          </div>
+          {error ? <div className="form-error" role="alert">{error}</div> : null}
+        </div>
+        <footer className="model-dialog__foot">
+          <Button type="button" className="button--quiet" onClick={onClose} disabled={deleting}>取消</Button>
+          <Button type="button" className="button--danger" onClick={onConfirm} disabled={deleting}>
+            {deleting ? "删除中…" : "确认删除记录"}
+          </Button>
+        </footer>
+      </div>
+    </dialog>
+  );
+}
+
 export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => void }) {
   const [sessions, setSessions] = useState<ExplorationSession[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -48,12 +124,28 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ExplorationSession | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [failureCode, setFailureCode] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<OperationReadiness | null>(null);
 
   const loadDetail = useCallback(async (id: string) => {
     try {
       const next = await getExploration(id);
       setDetail(next);
       setSessions((current) => current.map((item) => item.id === id ? next.session : item));
+      if (next.session.status === "FAILED" && next.session.exploreJobId) {
+        try {
+          const job = await getJob(next.session.exploreJobId);
+          setFailureCode(job.errorCode);
+        } catch {
+          setFailureCode(null);
+        }
+      } else {
+        setFailureCode(null);
+      }
       setError(null);
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : "无法读取探索详情。");
@@ -85,6 +177,18 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
     if (!selectedId) return;
     void loadDetail(selectedId);
   }, [loadDetail, selectedId]);
+
+  useEffect(() => {
+    if (!detail || detail.session.status !== "DRAFT") {
+      setReadiness(null);
+      return;
+    }
+    let active = true;
+    void getOperationReadiness("SCENE_EXPLORE", { explorationSessionId: detail.session.id })
+      .then((value) => { if (active) setReadiness(value); })
+      .catch(() => { if (active) setReadiness(null); });
+    return () => { active = false; };
+  }, [detail?.session.id, detail?.session.status, detail?.materials.map((item) => item.status).join("|")]);
 
   const activeJobId = detail?.session.status === "ANALYZING" ? detail.session.exploreJobId : null;
   const { events, connection } = useJobEvents({ jobId: activeJobId });
@@ -138,6 +242,46 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
     }
   };
 
+  const retryAnalysis = async () => {
+    if (!detail?.session.exploreJobId || detail.session.status !== "FAILED" || retrying) return;
+    setRetrying(true);
+    setError(null);
+    try {
+      const jobId = detail.session.exploreJobId;
+      await retryJob(jobId, crypto.randomUUID());
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const job = await getJob(jobId);
+        await loadDetail(detail.session.id);
+        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.status)) break;
+        await new Promise((resolve) => window.setTimeout(resolve, 750));
+      }
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "重新探索失败，请检查任务通知。" );
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const deletedId = deleteTarget.id;
+      await deleteExploration(deletedId);
+      setDeleteTarget(null);
+      if (selectedId === deletedId) {
+        setSelectedId(null);
+        setDetail(null);
+      }
+      await loadSessions();
+    } catch (reason) {
+      setDeleteError(reason instanceof ApiError ? reason.message : "删除失败，请稍后重试。");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const accept = async (candidateId: string) => {
     if (!detail || busy) return;
     setBusy(true);
@@ -154,14 +298,14 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
   };
 
   const readyForAnalysis = useMemo(() => Boolean(detail && detail.materials.length > 0
-    && detail.materials.every((item) => item.status === "READY")), [detail]);
+    && detail.materials.every((item) => item.status === "READY") && (readiness?.ready ?? true)), [detail, readiness]);
 
   return (
     <div className="page exploration-page">
       <PageHeader
-        eyebrow="工作台 / 场景探索"
+        eyebrow="STEP 0 · 可选 / 场景发现"
         title="从证据边界中发现候选场景"
-        description="素材先在 staging 中完成安全解析；接受候选后复用原文件、Chunk 与来源定位，不重新上传。"
+        description="仅在业务边界尚不明确时使用。接受候选后复用原文件、Chunk 与来源定位，并从正式流程 STEP 1 继续。"
         actions={<Button className="button--quiet" onClick={() => onNavigate("/")}><Glyph name="grid" />返回场景库</Button>}
       />
 
@@ -183,11 +327,18 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
           {loading ? <div className="model-loading">正在读取探索记录…</div> : null}
           {!loading && sessions.length === 0 ? <EmptyState title="暂无探索" detail="先创建一个主题，再添加素材。" /> : null}
           <div className="exploration-ledger__list">
-            {sessions.map((session) => <button key={session.id} className={selectedId === session.id ? "active" : ""}
-              onClick={() => setSelectedId(session.id)}>
-              <span>{session.title}</span>
-              <small>{STATUS_LABEL[session.status]} · {formatTime(session.updatedAt)}</small>
-            </button>)}
+            {sessions.map((session) => <div key={session.id}
+              className={`exploration-ledger__item ${selectedId === session.id ? "active" : ""}`}>
+              <button type="button" className="exploration-ledger__select" onClick={() => setSelectedId(session.id)}>
+                <span>{session.title}</span>
+                <small>{STATUS_LABEL[session.status]} · {formatTime(session.updatedAt)}</small>
+              </button>
+              {session.status !== "ANALYZING" ? <button type="button" className="exploration-ledger__delete"
+                aria-label={`删除探索记录：${session.title}`} title="删除探索记录"
+                onClick={() => { setDeleteError(null); setDeleteTarget(session); }}>
+                <Glyph name="trash" size={12}/><span>删除</span>
+              </button> : null}
+            </div>)}
           </div>
         </aside>
 
@@ -196,7 +347,14 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
           {detail ? <>
             <header className="exploration-workspace__head">
               <div><span className="eyebrow">EXP-{detail.session.id.slice(0, 8)}</span><h2>{detail.session.title}</h2></div>
-              <Status tone={statusTone(detail.session.status)}>{STATUS_LABEL[detail.session.status]}</Status>
+              <div className="exploration-workspace__head-actions">
+                <Status tone={statusTone(detail.session.status)}>{STATUS_LABEL[detail.session.status]}</Status>
+                {detail.session.status !== "ANALYZING" ? <Button type="button"
+                  className="button--quiet button--small exploration-delete-action"
+                  onClick={() => { setDeleteError(null); setDeleteTarget(detail.session); }}>
+                  <Glyph name="trash" size={13}/>删除记录
+                </Button> : null}
+              </div>
             </header>
 
             <div className="evidence-constellation" aria-label="探索证据路径">
@@ -223,11 +381,23 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
                     <span className={detail.session.status === "ANALYZING" ? "agent-trace__pulse" : ""}><Glyph name="bot" size={20}/></span>
                     <div><b>只读已验证 Chunk</b><p>{lastEvent ? `${lastEvent.stage} · ${lastEvent.percent}%` : "冻结模型、Skill 和素材集合后生成结构化候选。"}</p></div>
                   </div>
+                  {detail.session.status === "DRAFT" ? <OperationReadinessNotice report={readiness}
+                    label="场景探索" onNavigate={onNavigate}/> : null}
                   {detail.session.status === "DRAFT" ? <Button className="button--primary" disabled={!readyForAnalysis || busy} onClick={() => void analyze()}>
                     <Glyph name="play" size={15}/>{busy ? "正在启动…" : "开始探索"}
                   </Button> : null}
                   {detail.session.status === "ANALYZING" ? <div className="exploration-progress"><progress max={100} value={lastEvent?.percent ?? 5}/><span>{connection === "open" ? "实时连接" : "正在重连"}</span></div> : null}
-                  {detail.session.status === "FAILED" ? <p className="field-error">本次探索未生成有效候选。可新建探索复用后续素材。</p> : null}
+                  {detail.session.status === "FAILED" ? <div className="exploration-failure">
+                    <div><b>本次探索未生成有效候选</b>
+                      <p>{failureCode ? FAILURE_MESSAGE[failureCode] ?? "任务执行失败，请根据错误码检查模型输出。" : "任务执行失败，请查看任务通知。"}</p>
+                      {failureCode ? <code>{failureCode}</code> : null}</div>
+                    <div><Button className="button--primary button--small" disabled={retrying}
+                      onClick={() => void retryAnalysis()}><Glyph name="play" size={13}/>{retrying ? "重新探索中…" : "修复后重试"}</Button>
+                      <Button className="button--quiet button--small exploration-delete-action"
+                        onClick={() => { setDeleteError(null); setDeleteTarget(detail.session); }}>
+                        <Glyph name="trash" size={13}/>删除记录
+                      </Button></div>
+                  </div> : null}
                 </div>
               </section>
 
@@ -255,6 +425,8 @@ export function ExplorationPage({ onNavigate }: { onNavigate: (href: string) => 
 
       {uploadOpen && detail ? <UploadMaterialDialog explorationSessionId={detail.session.id}
         onClose={() => setUploadOpen(false)} onUploaded={() => void loadDetail(detail.session.id)} /> : null}
+      {deleteTarget ? <DeleteExplorationDialog session={deleteTarget} deleting={deleting} error={deleteError}
+        onClose={() => { if (!deleting) setDeleteTarget(null); }} onConfirm={() => void confirmDelete()} /> : null}
     </div>
   );
 }

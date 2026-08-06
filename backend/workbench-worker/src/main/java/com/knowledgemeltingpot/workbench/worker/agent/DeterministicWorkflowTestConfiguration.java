@@ -2,6 +2,7 @@ package com.knowledgemeltingpot.workbench.worker.agent;
 
 import com.knowledgemeltingpot.workbench.application.port.KnowledgeAlignmentWorkflowPort;
 import com.knowledgemeltingpot.workbench.application.port.KnowledgeExtractionWorkflowPort;
+import com.knowledgemeltingpot.workbench.application.port.AssetGenerationWorkflowPort;
 import com.knowledgemeltingpot.workbench.application.port.SceneExplorationWorkflowPort;
 import com.knowledgemeltingpot.workbench.application.port.SkillEvaluationWorkflowPort;
 import com.knowledgemeltingpot.workbench.domain.ExplorationCandidate;
@@ -74,11 +75,40 @@ public class DeterministicWorkflowTestConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(AssetGenerationWorkflowPort.class)
+    AssetGenerationWorkflowPort deterministicAssetGenerationWorkflow() {
+        return request -> {
+            if (request.assetType() == com.knowledgemeltingpot.workbench.domain.AssetType.EVALUATION_SET) {
+                List<AssetGenerationWorkflowPort.DraftItem> items = request.holdoutSources().stream()
+                        .map(source -> new AssetGenerationWorkflowPort.DraftItem(source.materialId().toString(),
+                                "独立留出评测", "", List.of(source.materialId().toString()),
+                                List.of("LABELED_HOLDOUT")))
+                        .toList();
+                return new AssetGenerationWorkflowPort.AssetDraft("本地验收留出登记", items);
+            }
+            String source = request.sourceRefCodes().isEmpty() ? "SRC-MISSING" : request.sourceRefCodes().getFirst();
+            var item = switch (request.assetType()) {
+                case RULE_CATALOG -> new AssetGenerationWorkflowPort.DraftItem("R001", "分类规则",
+                        "按定稿知识执行条件判断与分类结论。", List.of(source), List.of("规则"));
+                case DECISION_FLOW -> new AssetGenerationWorkflowPort.DraftItem("S001", "核验并分类",
+                        "核验输入条件、例外与来源后给出可审计结论。", List.of(source), List.of("流程"));
+                case SKILL_PACKAGE -> new AssetGenerationWorkflowPort.DraftItem("P001", "受控判断模块",
+                        "仅使用提供的定稿知识和来源锚点生成结构化结果，禁止执行脚本。", List.of(source),
+                        List.of("RESOURCE_ONLY"));
+                case QA_PAIRS -> new AssetGenerationWorkflowPort.DraftItem("Q001", "如何执行分类？",
+                        "依据定稿规则核验条件和例外，并保留来源锚点。", List.of(source), List.of("QA"));
+                case EVALUATION_SET -> throw new IllegalStateException("handled above");
+            };
+            return new AssetGenerationWorkflowPort.AssetDraft("本地确定性资产验收结果", List.of(item));
+        };
+    }
+
+    @Bean
     @ConditionalOnMissingBean(SceneExplorationWorkflowPort.class)
     SceneExplorationWorkflowPort deterministicSceneExplorationWorkflow() {
         return request -> {
-            List<java.util.UUID> materialIds = request.sources().stream()
-                    .map(SceneExplorationWorkflowPort.ExplorationSource::materialId).toList();
+            List<String> sourceCodes = request.sources().stream()
+                    .map(SceneExplorationWorkflowPort.ExplorationSource::sourceCode).toList();
             String sourceNames = request.sources().stream()
                     .map(SceneExplorationWorkflowPort.ExplorationSource::fileName)
                     .collect(java.util.stream.Collectors.joining("、"));
@@ -86,7 +116,7 @@ public class DeterministicWorkflowTestConfiguration {
                     "由 staging 素材识别出的本地验收候选场景。", "异常线索与审批红线",
                     "聚合规则、例外与审批边界。", "候选直接来自已验证素材：" + sourceNames,
                     ExplorationCandidate.ValueLevel.HIGH, Math.max(1, request.sources().size() * 3),
-                    Math.max(1, request.sources().size()), List.of("授信", "风险识别"), materialIds);
+                    Math.max(1, request.sources().size()), List.of("授信", "风险识别"), sourceCodes);
             return new SceneExplorationWorkflowPort.ExplorationResult(List.of(candidate));
         };
     }

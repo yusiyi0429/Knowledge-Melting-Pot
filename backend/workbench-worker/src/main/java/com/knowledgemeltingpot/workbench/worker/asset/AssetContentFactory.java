@@ -2,6 +2,7 @@ package com.knowledgemeltingpot.workbench.worker.asset;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.knowledgemeltingpot.workbench.application.port.MaterialSelection;
+import com.knowledgemeltingpot.workbench.application.port.AssetGenerationWorkflowPort.AssetDraft;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
 import com.knowledgemeltingpot.workbench.domain.DocumentRevision;
 import java.io.ByteArrayInputStream;
@@ -49,10 +50,24 @@ public final class AssetContentFactory {
     public byte[] build(UUID subSceneId, AssetType type, int version, DocumentRevision revision,
             List<MaterialSelection> holdout) throws IOException {
         return switch (type) {
-            case RULE_CATALOG -> ruleCatalog(subSceneId, version, revision);
-            case DECISION_FLOW -> decisionFlow(subSceneId, version, revision);
-            case SKILL_PACKAGE -> skillPackage(subSceneId, version, revision);
-            case QA_PAIRS -> qaPairs(subSceneId, version, revision);
+            case RULE_CATALOG -> ruleCatalog(subSceneId, version, revision, null);
+            case DECISION_FLOW -> decisionFlow(subSceneId, version, revision, null);
+            case SKILL_PACKAGE -> skillPackage(subSceneId, version, revision, null);
+            case QA_PAIRS -> qaPairs(subSceneId, version, revision, null);
+            case EVALUATION_SET -> throw new IllegalArgumentException(
+                    "EVALUATION_SET must use buildEvaluationSet without document content");
+        };
+    }
+
+    /** Production path: deterministic rendering and packaging of an already validated Agent draft. */
+    public byte[] build(UUID subSceneId, AssetType type, int version, DocumentRevision revision,
+            AssetDraft draft) throws IOException {
+        if (draft == null || draft.items().isEmpty()) throw new IllegalArgumentException("validated Agent draft is required");
+        return switch (type) {
+            case RULE_CATALOG -> ruleCatalog(subSceneId, version, revision, draft);
+            case DECISION_FLOW -> decisionFlow(subSceneId, version, revision, draft);
+            case SKILL_PACKAGE -> skillPackage(subSceneId, version, revision, draft);
+            case QA_PAIRS -> qaPairs(subSceneId, version, revision, draft);
             case EVALUATION_SET -> throw new IllegalArgumentException(
                     "EVALUATION_SET must use buildEvaluationSet without document content");
         };
@@ -64,6 +79,11 @@ public final class AssetContentFactory {
      */
     public byte[] buildEvaluationSet(UUID subSceneId, int version, long sourceRevision, String contentHash,
             List<MaterialSelection> holdout) throws IOException {
+        return buildEvaluationSet(subSceneId, version, sourceRevision, contentHash, holdout, null);
+    }
+
+    public byte[] buildEvaluationSet(UUID subSceneId, int version, long sourceRevision, String contentHash,
+            List<MaterialSelection> holdout, AssetDraft draft) throws IOException {
         List<Map<String, Object>> entries = holdout.stream()
                 .sorted(Comparator.comparing(selection -> selection.material().id().toString()))
                 .map(selection -> {
@@ -95,15 +115,27 @@ public final class AssetContentFactory {
                                 "sizeBytes", Map.of("type", "integer"),
                                 "format", Map.of("type", "string"),
                                 "partition", Map.of("type", "string"))));
-        return zip(Map.of(
-                "evaluation.json", toJson(payload),
-                "schema.json", toJson(schema)));
+        Map<String, byte[]> files = new LinkedHashMap<>();
+        files.put("evaluation.json", toJson(payload));
+        files.put("schema.json", toJson(schema));
+        if (draft != null) {
+            files.put("agent-plan.json", toJson(Map.of("summary", draft.summary(), "items", draft.items())));
+        }
+        return zip(files);
     }
 
     // ---- RULE_CATALOG: rules.json + rules.xlsx --------------------------------
 
-    private byte[] ruleCatalog(UUID subSceneId, int version, DocumentRevision revision) throws IOException {
-        List<Map<String, Object>> rules = extractRules(revision);
+    private byte[] ruleCatalog(UUID subSceneId, int version, DocumentRevision revision, AssetDraft draft) throws IOException {
+        List<Map<String, Object>> rules = draft == null ? extractRules(revision) : draft.items().stream().map(item -> {
+            Map<String, Object> rule = new LinkedHashMap<>();
+            rule.put("ruleId", item.id());
+            rule.put("title", item.title());
+            rule.put("basis", item.content());
+            rule.put("sourceRefs", item.sourceRefs());
+            rule.put("priority", item.tags().stream().findFirst().orElse("NORMAL"));
+            return rule;
+        }).toList();
         Map<String, Object> rulesJson = Map.of(
                 "schemaVersion", "1.0",
                 "subSceneId", subSceneId,
@@ -153,8 +185,15 @@ public final class AssetContentFactory {
 
     // ---- DECISION_FLOW: flow.md + flow.json + flow.mermaid --------------------
 
-    private byte[] decisionFlow(UUID subSceneId, int version, DocumentRevision revision) throws IOException {
-        List<Map<String, Object>> steps = extractSteps(revision);
+    private byte[] decisionFlow(UUID subSceneId, int version, DocumentRevision revision, AssetDraft draft) throws IOException {
+        List<Map<String, Object>> steps = draft == null ? extractSteps(revision) : draft.items().stream().map(item -> {
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("stepId", item.id());
+            step.put("title", item.title());
+            step.put("basis", item.content());
+            step.put("sourceRefs", item.sourceRefs());
+            return step;
+        }).toList();
         StringBuilder markdown = new StringBuilder();
         markdown.append("# 研判流程\n\n");
         markdown.append("来源 Revision v").append(revision.revision()).append("（hash ")
@@ -190,11 +229,14 @@ public final class AssetContentFactory {
 
     // ---- SKILL_PACKAGE: SKILL.md + prompt + schema + manifest -----------------
 
-    private byte[] skillPackage(UUID subSceneId, int version, DocumentRevision revision) throws IOException {
+    private byte[] skillPackage(UUID subSceneId, int version, DocumentRevision revision, AssetDraft draft) throws IOException {
         String skillId = "skill-" + subSceneId + "-v" + version;
-        String prompt = "你是面向场景【" + revision.subSceneId() + "】的知识萃取执行器。\n"
-                + "只依据提供的定稿文档（Revision v" + revision.revision() + "）与来源锚点作答；\n"
-                + "必须保留 [SRC-*] 来源引用；禁止输出推理链。\n";
+        String prompt = draft == null
+                ? "你是面向场景【" + revision.subSceneId() + "】的知识萃取执行器。\n"
+                        + "只依据提供的定稿文档（Revision v" + revision.revision() + "）与来源锚点作答；\n"
+                        + "必须保留 [SRC-*] 来源引用；禁止输出推理链。\n"
+                : draft.items().stream().map(item -> "## " + item.title() + "\n" + item.content())
+                        .collect(java.util.stream.Collectors.joining("\n\n"));
         Map<String, Object> schema = Map.of(
                 "type", "object",
                 "required", List.of("ruleId", "title", "basis", "sourceRefs"),
@@ -238,14 +280,30 @@ public final class AssetContentFactory {
 
     // ---- QA_PAIRS: qa.jsonl + schema + report ---------------------------------
 
-    private byte[] qaPairs(UUID subSceneId, int version, DocumentRevision revision) throws IOException {
+    private byte[] qaPairs(UUID subSceneId, int version, DocumentRevision revision, AssetDraft draft) throws IOException {
         List<Map<String, Object>> pairs = new ArrayList<>();
         List<String> seen = new ArrayList<>();
         Map<String, Object> report = new LinkedHashMap<>();
         int duplicates = 0;
         int withAnchors = 0;
         int withoutAnchors = 0;
-        List<Map<String, Object>> paragraphs = paragraphRefs(revision);
+        if (draft != null) {
+            for (var item : draft.items()) {
+                Map<String, Object> pair = new LinkedHashMap<>();
+                pair.put("id", item.id());
+                pair.put("question", item.title());
+                pair.put("answer", item.content());
+                pair.put("sourceRefs", item.sourceRefs());
+                pair.put("tags", item.tags());
+                pairs.add(pair);
+            }
+            report.put("schema", "qa-pairs/v1");
+            report.put("qaCount", pairs.size());
+            report.put("agentSummary", draft.summary());
+            report.put("duplicatesRemoved", 0);
+            report.put("anchorCheck", Map.of("validated", true));
+        }
+        List<Map<String, Object>> paragraphs = draft == null ? paragraphRefs(revision) : List.of();
         for (Map<String, Object> paragraph : paragraphs) {
             List<?> refs = (List<?>) paragraph.get("refs");
             if (refs == null || refs.isEmpty()) {

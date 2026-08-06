@@ -507,6 +507,10 @@ export async function getEffectiveAgentConfigurations(
   return getJson(`/api/v1/agent-mounts/effective?${query}`, "无法解析有效智能体配置。");
 }
 
+export async function getGlobalEffectiveAgentConfigurations(): Promise<EffectiveAgentConfiguration[]> {
+  return getJson("/api/v1/agent-mounts/effective-global", "无法解析全局智能体配置。");
+}
+
 export async function getAgentConfigurationCatalog(): Promise<AgentConfigurationCatalog> {
   return getJson("/api/v1/agent-configuration-catalog", "无法读取模型与 Skill 版本目录。");
 }
@@ -555,6 +559,44 @@ export async function applyConfigurationImport(
     "应用配置导入失败。",
   );
   return (await response.json()) as AgentScopeConfiguration;
+}
+
+export type ReadinessOperation =
+  | "SCENE_EXPLORE"
+  | "EXTRACT"
+  | "ALIGN"
+  | "GENERATE_ASSETS"
+  | "RELEASE"
+  | "EVALUATE";
+
+export interface OperationReadiness {
+  operation: ReadinessOperation;
+  ready: boolean;
+  agents: Array<{
+    role: AgentRole;
+    configured: boolean;
+    enabled: boolean;
+    modelConfigVersionId: string | null;
+    skillVersionId: string | null;
+    effectiveConfigHash: string | null;
+  }>;
+  blockers: Array<{ code: string; message: string; actionHref: string }>;
+}
+
+export async function getOperationReadiness(
+  operation: ReadinessOperation,
+  context: {
+    explorationSessionId?: string | null;
+    sceneId?: string | null;
+    subSceneId?: string | null;
+    roundId?: string | null;
+  },
+): Promise<OperationReadiness> {
+  const query = new URLSearchParams({ operation });
+  for (const [key, value] of Object.entries(context)) {
+    if (value) query.set(key, value);
+  }
+  return getJson(`/api/v1/operation-readiness?${query}`, "无法检查操作就绪状态。");
 }
 
 export type UserRole = "OPERATOR" | "PUBLISHER" | "ADMIN";
@@ -846,6 +888,13 @@ export async function getExploration(id: string): Promise<ExplorationDetail> {
   return getJson(`/api/v1/explorations/${id}`, "无法读取场景探索详情。");
 }
 
+export async function deleteExploration(id: string): Promise<void> {
+  await requireSuccess(
+    await mutateWithCsrf(`/api/v1/explorations/${id}`, "DELETE"),
+    "删除场景探索记录失败。",
+  );
+}
+
 export async function startExploration(id: string, idempotencyKey: string): Promise<JobAccepted> {
   const token = await csrf();
   const response = await requireSuccess(
@@ -953,6 +1002,25 @@ export interface Job {
   updatedAt: string;
 }
 
+export interface AgentExecutionAttempt {
+  id: string;
+  jobId: string;
+  jobAttempt: number;
+  role: AgentRole;
+  assetType: AssetType;
+  assetId: string;
+  modelConfigVersionId: string;
+  skillVersionId: string;
+  roleConfigVersionId: string | null;
+  effectiveConfigHash: string;
+  inputHash: string;
+  outputHash: string;
+  status: "RUNNING" | "SUCCEEDED" | "FAILED";
+  failureCode: string;
+  startedAt: string;
+  completedAt: string | null;
+}
+
 export interface JobAccepted {
   jobId: string;
   status: string;
@@ -1038,6 +1106,10 @@ export async function deactivateMaterialBinding(materialId: string, bindingId: s
 
 export async function getJob(jobId: string): Promise<Job> {
   return getJson(`/api/v1/jobs/${jobId}`, "无法读取任务状态。");
+}
+
+export async function listJobAgentExecutions(jobId: string): Promise<AgentExecutionAttempt[]> {
+  return getJson(`/api/v1/jobs/${encodeURIComponent(jobId)}/agent-executions`, "无法读取智能体执行记录。");
 }
 
 export async function retryJob(jobId: string, idempotencyKey: string): Promise<JobAccepted> {

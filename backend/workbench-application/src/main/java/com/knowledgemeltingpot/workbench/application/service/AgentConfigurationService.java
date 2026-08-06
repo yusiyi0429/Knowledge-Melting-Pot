@@ -106,6 +106,15 @@ public class AgentConfigurationService {
         return resolveRole(role, templates.get(role), global.get(role), null, null);
     }
 
+    @Transactional(readOnly = true)
+    public List<EffectiveAgentConfiguration> resolveGlobal() {
+        Map<AgentRole, AgentRoleTemplateVersion> templates = latestTemplates();
+        Map<AgentRole, AgentMountVersion> global = index(mountRepository.findLatest(AgentMountScope.GLOBAL, null));
+        return Arrays.stream(AgentRole.values())
+                .map(role -> resolveRole(role, templates.get(role), global.get(role), null, null))
+                .toList();
+    }
+
     @Transactional
     public ScopeConfiguration append(AgentMountScope scope, UUID scopeId, AgentMountDraft draft,
             String ifMatch, UUID actorId, String traceId) {

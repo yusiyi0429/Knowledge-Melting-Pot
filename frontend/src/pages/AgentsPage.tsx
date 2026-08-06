@@ -8,6 +8,7 @@ import {
   getAgentScope,
   getCurrentUser,
   getEffectiveAgentConfigurations,
+  getGlobalEffectiveAgentConfigurations,
   listAgentRoles,
   listScenes,
   listSubScenes,
@@ -102,6 +103,7 @@ export function AgentsPage() {
   const [importText, setImportText] = useState("");
   const [importPreview, setImportPreview] = useState<ConfigurationImportPreview | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const configurationLoadSequence = useRef(0);
 
   useEffect(() => {
@@ -117,7 +119,8 @@ export function AgentsPage() {
       })
       .catch((reason) => {
         if (active) setLoadError(reason instanceof ApiError ? reason.message : "无法读取智能体治理数据。");
-      });
+      })
+      .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
 
@@ -148,14 +151,17 @@ export function AgentsPage() {
   const scopeId = scopeType === "GLOBAL" ? null : scopeType === "SCENE" ? sceneId : subSceneId || null;
 
   const reloadConfiguration = useCallback(async () => {
-    if (!sceneId || subScenesLoadedForSceneId !== sceneId || (scopeType === "SUB_SCENE" && !subSceneId)) return;
+    if (scopeType !== "GLOBAL"
+      && (!sceneId || subScenesLoadedForSceneId !== sceneId || (scopeType === "SUB_SCENE" && !subSceneId))) return;
     const sequence = ++configurationLoadSequence.current;
     setLoading(true);
     setLoadError(null);
     try {
       const [scopeResult, effectiveResult] = await Promise.all([
         getAgentScope(scopeType, scopeId),
-        getEffectiveAgentConfigurations(sceneId, subSceneId || null),
+        scopeType === "GLOBAL"
+          ? getGlobalEffectiveAgentConfigurations()
+          : getEffectiveAgentConfigurations(sceneId, subSceneId || null),
       ]);
       if (sequence !== configurationLoadSequence.current) return;
       setScope(scopeResult);
@@ -323,15 +329,60 @@ export function AgentsPage() {
     }
   };
 
+  const prepareGlobalAgents = async () => {
+    if (!isAdmin || bootstrapBusy) return;
+    setActionError(null);
+    setNotice(null);
+    const model = catalog.models[0];
+    if (!model) {
+      setActionError("尚无可用模型版本。请先在“模型”页面创建连接、填写模型 ID 并完成连接测试。");
+      return;
+    }
+    const drafts: AgentMountDraft[] = [];
+    for (const role of roles) {
+      const expectedName = BUILT_IN_SKILLS[role.role];
+      const skill = catalog.skills.find((item) => item.kind === "TEMPLATE" && item.name === expectedName);
+      if (!skill) {
+        setActionError(`缺少内置 Skill“${expectedName}”，请确认服务已完成默认 Skill 初始化。`);
+        return;
+      }
+      drafts.push({
+        role: role.role,
+        enabled: true,
+        modelConfigVersionId: model.versionId,
+        skillVersionId: skill.versionId,
+        options: { strategy: "balanced" },
+      });
+    }
+    setBootstrapBusy(true);
+    try {
+      const preview = await previewConfigurationImport("GLOBAL", null, drafts);
+      await applyConfigurationImport(preview.id, preview.manifestHash);
+      setScopeType("GLOBAL");
+      setNotice(`7 个智能体已全局启用，并固化到 ${model.connectionName} / ${model.modelId}。`);
+      await reloadConfiguration();
+    } catch (reason) {
+      setActionError(reason instanceof ApiError ? reason.message : "一键准备智能体失败。");
+    } finally {
+      setBootstrapBusy(false);
+    }
+  };
+
   const stages = ["环节一", "环节二", "环节三"];
 
   return (
     <div className="page agent-governance">
       <PageHeader eyebrow="治理 / 智能体挂载" title="智能体角色与挂载"
-        description="按场景和子场景配置七种智能体角色。每次修改都会产生不可变版本，可随发布记录追溯。"
-        actions={<Button className="button--quiet" onClick={() => { setImportOpen((value) => !value); setActionError(null); }}>
-          <Glyph name="download" size={14} />导入配置
-        </Button>} />
+        description="这是运行前准备，不是业务步骤。全局模板可一次准备七个角色，场景与子场景只在需要时覆盖。"
+        actions={<>
+          {isAdmin ? <Button className="button--primary" onClick={() => void prepareGlobalAgents()}
+            disabled={bootstrapBusy || roles.length === 0 || catalog.models.length === 0}>
+            <Glyph name="play" size={14} />{bootstrapBusy ? "正在准备…" : "一键准备 7 个智能体"}
+          </Button> : null}
+          <Button className="button--quiet" onClick={() => { setImportOpen((value) => !value); setActionError(null); }}>
+            <Glyph name="download" size={14} />导入配置
+          </Button>
+        </>} />
 
       <section className="agent-lineage-panel" aria-label="配置继承层级">
         {(["GLOBAL", "SCENE", "SUB_SCENE"] as AgentMountScope[]).map((item, index) => {
@@ -346,11 +397,13 @@ export function AgentsPage() {
 
       <section className="scope-bar">
         <div><span className="scope-bar__mark"><Glyph name="scene" size={17} /></span><div><b>当前编辑层：{SCOPE_LABELS[scopeType]}</b><small>ETag {shortHash(scope?.etag)}</small></div></div>
-        <label><span>主场景</span><select value={sceneId} onChange={(event) => setSceneId(event.target.value)}>
+        <label><span>主场景</span><select value={sceneId} disabled={scopeType === "GLOBAL"}
+          onChange={(event) => setSceneId(event.target.value)}>
           {scenes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
         </select></label>
         <Glyph name="chevron" size={14} />
-        <label><span>子场景</span><select value={subSceneId} onChange={(event) => setSubSceneId(event.target.value)}>
+        <label><span>子场景</span><select value={subSceneId} disabled={scopeType === "GLOBAL"}
+          onChange={(event) => setSubSceneId(event.target.value)}>
           {subScenes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
         </select></label>
         <Status tone={scope?.mounts.length ? "info" : "neutral"}>{scope?.mounts.length ?? 0} 个本层版本头</Status>

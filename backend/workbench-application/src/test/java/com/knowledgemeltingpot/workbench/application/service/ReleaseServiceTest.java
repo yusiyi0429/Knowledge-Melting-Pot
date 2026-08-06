@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.knowledgemeltingpot.workbench.application.error.ConflictException;
 import com.knowledgemeltingpot.workbench.application.error.PreconditionFailedException;
 import com.knowledgemeltingpot.workbench.application.port.AssetRepository;
+import com.knowledgemeltingpot.workbench.application.port.AgentExecutionAttemptRepository;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseItemSnapshot;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseRepository;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
@@ -28,6 +29,8 @@ import com.knowledgemeltingpot.workbench.application.port.SkillRepository;
 import com.knowledgemeltingpot.workbench.domain.Asset;
 import com.knowledgemeltingpot.workbench.domain.AssetStatus;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
+import com.knowledgemeltingpot.workbench.domain.AgentExecutionAttempt;
+import com.knowledgemeltingpot.workbench.domain.AgentExecutionAttemptStatus;
 import com.knowledgemeltingpot.workbench.domain.AgentMountScope;
 import com.knowledgemeltingpot.workbench.domain.AgentMountVersion;
 import com.knowledgemeltingpot.workbench.domain.AgentRole;
@@ -71,6 +74,7 @@ class ReleaseServiceTest {
     private AgentConfigurationService agentConfigurations;
     private ModelConnectionRepository models;
     private SkillRepository skills;
+    private AgentExecutionAttemptRepository agentExecutions;
 
     @BeforeEach
     void setUp() {
@@ -81,11 +85,12 @@ class ReleaseServiceTest {
         agentConfigurations = mock(AgentConfigurationService.class);
         models = mock(ModelConnectionRepository.class);
         skills = mock(SkillRepository.class);
+        agentExecutions = mock(AgentExecutionAttemptRepository.class);
         objectMapper = canonicalObjectMapper();
         when(releases.isFinalizedDocumentRevision(any(UUID.class), any(UUID.class))).thenReturn(true);
         service = new ReleaseService(scenes, assets, releases, audit, objectMapper,
                 Clock.fixed(NOW, ZoneOffset.UTC), agentConfigurations,
-                models, skills);
+                models, skills, agentExecutions);
     }
 
     @Test
@@ -260,6 +265,41 @@ class ReleaseServiceTest {
         assertThat(configuration.path("skill").path("packageHash").asText()).isEqualTo("c".repeat(64));
         assertThat(configuration.path("lineage").get(0).path("templateVersionId").asText())
                 .isEqualTo(templateVersionId.toString());
+    }
+
+    @Test
+    void manifestBindsEachNewAssetToItsActualFrozenAgentExecution() throws Exception {
+        UUID sceneId = UUID.randomUUID();
+        UUID subSceneId = UUID.randomUUID();
+        UUID revisionId = UUID.randomUUID();
+        UUID modelVersionId = UUID.randomUUID();
+        UUID skillVersionId = UUID.randomUUID();
+        givenScene(sceneId, List.of(subSceneId));
+        List<Asset> generated = readyAssets(subSceneId, revisionId, 1);
+        when(assets.findLatestByScene(sceneId)).thenReturn(generated);
+        when(releases.findLatestPublished(sceneId)).thenReturn(Optional.empty());
+        when(releases.savePublished(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+        for (Asset asset : generated) {
+            when(agentExecutions.findByAsset(asset.id())).thenReturn(Optional.of(new AgentExecutionAttempt(
+                    UUID.randomUUID(), UUID.randomUUID(), 1, AssetService.roleFor(asset.type()), asset.type(),
+                    asset.id(), modelVersionId, skillVersionId, UUID.randomUUID(), "a".repeat(64),
+                    "b".repeat(64), "c".repeat(64), AgentExecutionAttemptStatus.SUCCEEDED, "", NOW, NOW)));
+        }
+
+        Release release = service.publish(sceneId, command(List.of(subSceneId), null), UUID.randomUUID(),
+                "trace-provenance");
+
+        var manifest = objectMapper.readTree(release.manifestJson());
+        assertThat(manifest.path("schemaVersion").asText()).isEqualTo("1.2");
+        assertThat(manifest.path("subScenes").get(0).path("assets")).allSatisfy(entry -> {
+            assertThat(entry.path("modelConfigVersionId").asText()).isEqualTo(modelVersionId.toString());
+            assertThat(entry.path("skillVersionId").asText()).isEqualTo(skillVersionId.toString());
+            assertThat(entry.path("effectiveConfigHash").asText()).isEqualTo("a".repeat(64));
+            assertThat(entry.path("inputHash").asText()).isEqualTo("b".repeat(64));
+            assertThat(entry.path("outputHash").asText()).isEqualTo("c".repeat(64));
+            assertThat(entry.has("prompt")).isFalse();
+            assertThat(entry.has("rawOutput")).isFalse();
+        });
     }
 
     @Test

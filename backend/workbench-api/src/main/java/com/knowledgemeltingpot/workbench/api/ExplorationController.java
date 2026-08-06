@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -53,6 +54,12 @@ public class ExplorationController {
     public ResponseEntity<DetailResponse> get(@PathVariable UUID sessionId) {
         ExplorationService.ExplorationDetail detail = explorations.get(sessionId);
         return ResponseEntity.ok().eTag(detail.etag()).body(DetailResponse.from(detail));
+    }
+
+    @DeleteMapping("/{sessionId}")
+    public ResponseEntity<Void> delete(@PathVariable UUID sessionId, Authentication authentication) {
+        explorations.delete(sessionId, currentUser.id(authentication), RequestIdFilter.currentTraceId());
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{sessionId}/analysis-jobs")

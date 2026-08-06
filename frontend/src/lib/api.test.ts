@@ -18,6 +18,7 @@ import {
   createUploadIntent,
   createUser,
   deactivateMaterialBinding,
+  deleteExploration,
   deleteModelConnection,
   deleteModelEndpointRule,
   generateAssets,
@@ -25,12 +26,15 @@ import {
   getEvaluationRun,
   getKnowledgeDocument,
   getLatestRelease,
+  getGlobalEffectiveAgentConfigurations,
+  getOperationReadiness,
   getReleaseManifest,
   getScene,
   listDocumentRevisions,
   listEmbeddingProfiles,
   listExtractionRounds,
   listEvaluationRuns,
+  listJobAgentExecutions,
   listModelConfigVersions,
   listModelConnections,
   listModelEndpointRules,
@@ -66,8 +70,56 @@ import {
 } from "./api";
 import type { CreateUploadIntentDraft } from "./api";
 
+describe("Agent execution provenance API client", () => {
+  it("loads redacted immutable execution records for a job", async () => {
+    const attempt = {
+      id: "attempt-1", jobId: "job-1", jobAttempt: 1, role: "RULE_CATALOG_GENERATOR",
+      assetType: "RULE_CATALOG", modelConfigVersionId: "model-v1", skillVersionId: "skill-v1",
+      roleConfigVersionId: "mount-v1", effectiveConfigHash: "a".repeat(64), inputHash: "b".repeat(64),
+      outputHash: "c".repeat(64), status: "SUCCEEDED", failureCode: "",
+      startedAt: "2026-08-06T04:00:00Z", completedAt: "2026-08-06T04:00:01Z",
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json([attempt]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await listJobAgentExecutions("job-1");
+
+    expect(result[0]).toMatchObject({ role: "RULE_CATALOG_GENERATOR", status: "SUCCEEDED" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/jobs/job-1/agent-executions",
+      expect.objectContaining({ credentials: "same-origin" }));
+  });
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("operation readiness API client", () => {
+  it("loads all seven global effective mounts without requiring a scene", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getGlobalEffectiveAgentConfigurations();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/agent-mounts/effective-global",
+      expect.objectContaining({ credentials: "same-origin" }));
+  });
+
+  it("sends only the supplied operation context", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({
+      operation: "EXTRACT", ready: false, agents: [], blockers: [],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getOperationReadiness("EXTRACT", {
+      sceneId: "scene-1", subSceneId: "sub-1", roundId: "round-1", explorationSessionId: null,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/operation-readiness?operation=EXTRACT&sceneId=scene-1&subSceneId=sub-1&roundId=round-1",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+  });
 });
 
 describe("session API client", () => {
@@ -137,6 +189,28 @@ describe("session API client", () => {
         code: "authentication-failed",
         traceId: "trace-123",
       });
+  });
+});
+
+describe("scene exploration API client", () => {
+  it("soft-deletes an exploration through a CSRF-protected request", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        headerName: "X-XSRF-TOKEN",
+        parameterName: "_csrf",
+        token: "csrf-token",
+      }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deleteExploration("exploration-failed-1");
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/explorations/exploration-failed-1");
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "X-XSRF-TOKEN": "csrf-token" },
+    });
   });
 });
 

@@ -8,6 +8,7 @@ import com.knowledgemeltingpot.workbench.application.error.ConflictException;
 import com.knowledgemeltingpot.workbench.application.error.NotFoundException;
 import com.knowledgemeltingpot.workbench.application.error.PreconditionFailedException;
 import com.knowledgemeltingpot.workbench.application.port.AssetRepository;
+import com.knowledgemeltingpot.workbench.application.port.AgentExecutionAttemptRepository;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseItemSnapshot;
 import com.knowledgemeltingpot.workbench.application.port.ReleaseRepository;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
@@ -16,6 +17,7 @@ import com.knowledgemeltingpot.workbench.application.port.SkillRepository;
 import com.knowledgemeltingpot.workbench.domain.Asset;
 import com.knowledgemeltingpot.workbench.domain.AssetStatus;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
+import com.knowledgemeltingpot.workbench.domain.AgentExecutionAttemptStatus;
 import com.knowledgemeltingpot.workbench.domain.Release;
 import com.knowledgemeltingpot.workbench.domain.ReleaseCoverage;
 import com.knowledgemeltingpot.workbench.domain.ReleaseItemDisposition;
@@ -55,11 +57,12 @@ public class ReleaseService {
     private final AgentConfigurationService agentConfigurationService;
     private final ModelConnectionRepository modelRepository;
     private final SkillRepository skillRepository;
+    private final AgentExecutionAttemptRepository agentExecutions;
 
     public ReleaseService(SceneRepository sceneRepository, AssetRepository assetRepository,
             ReleaseRepository releaseRepository, AuditService auditService, ObjectMapper objectMapper, Clock clock,
             AgentConfigurationService agentConfigurationService, ModelConnectionRepository modelRepository,
-            SkillRepository skillRepository) {
+            SkillRepository skillRepository, AgentExecutionAttemptRepository agentExecutions) {
         this.sceneRepository = sceneRepository;
         this.assetRepository = assetRepository;
         this.releaseRepository = releaseRepository;
@@ -71,6 +74,7 @@ public class ReleaseService {
         this.agentConfigurationService = agentConfigurationService;
         this.modelRepository = modelRepository;
         this.skillRepository = skillRepository;
+        this.agentExecutions = agentExecutions;
     }
 
     @Transactional(readOnly = true)
@@ -89,10 +93,10 @@ public class ReleaseService {
         Instant now = Instant.now(clock);
         UUID releaseId = UUID.randomUUID();
         UUID previousReleaseId = plan.validation().baseReleaseId();
-        ReleaseManifest unsignedManifest = new ReleaseManifest("1.1", releaseId, sceneId, command.tag(),
+        ReleaseManifest unsignedManifest = new ReleaseManifest("1.2", releaseId, sceneId, command.tag(),
                 plan.validation().coverage(), command.note(), now, previousReleaseId, plan.subScenes(), "");
         String manifestHash = Hashes.sha256(toCanonicalJson(unsignedManifest));
-        ReleaseManifest manifest = new ReleaseManifest("1.1", releaseId, sceneId, command.tag(),
+        ReleaseManifest manifest = new ReleaseManifest("1.2", releaseId, sceneId, command.tag(),
                 plan.validation().coverage(), command.note(), now, previousReleaseId, plan.subScenes(), manifestHash);
         String manifestJson = toCanonicalJson(manifest);
         Release release = new Release(releaseId, sceneId, command.tag(), ReleaseStatus.PUBLISHED,
@@ -279,8 +283,19 @@ public class ReleaseService {
             List<ReleaseManifest.AgentConfigurationEntry> configurations) {
         List<ReleaseManifest.AssetEntry> assets = items.stream()
                 .sorted(ITEM_ORDER)
-                .map(item -> new ReleaseManifest.AssetEntry(item.assetId(), item.assetType(), item.assetVersion(),
-                        item.documentRevisionId(), item.objectKey(), item.checksum()))
+                .map(item -> {
+                    var attempt = agentExecutions.findByAsset(item.assetId())
+                            .filter(value -> value.status() == AgentExecutionAttemptStatus.SUCCEEDED)
+                            .orElse(null);
+                    return new ReleaseManifest.AssetEntry(item.assetId(), item.assetType(), item.assetVersion(),
+                            item.documentRevisionId(), item.objectKey(), item.checksum(),
+                            attempt == null ? null : attempt.role(),
+                            attempt == null ? null : attempt.modelConfigVersionId(),
+                            attempt == null ? null : attempt.skillVersionId(),
+                            attempt == null ? null : attempt.effectiveConfigHash(),
+                            attempt == null ? null : attempt.inputHash(),
+                            attempt == null ? null : attempt.outputHash());
+                })
                 .toList();
         UUID documentRevisionId = items.getFirst().documentRevisionId();
         return new ReleaseManifest.SubSceneEntry(subSceneId, status, sourceReleaseId, documentRevisionId, assets,

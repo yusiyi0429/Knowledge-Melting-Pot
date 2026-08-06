@@ -54,7 +54,13 @@ public record ReleaseManifest(
             int assetVersion,
             UUID documentRevisionId,
             String objectKey,
-            String checksum) {
+            String checksum,
+            @JsonInclude(JsonInclude.Include.NON_NULL) AgentRole agentRole,
+            @JsonInclude(JsonInclude.Include.NON_NULL) UUID modelConfigVersionId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) UUID skillVersionId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String effectiveConfigHash,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String inputHash,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String outputHash) {
     }
 
     public record AgentConfigurationEntry(

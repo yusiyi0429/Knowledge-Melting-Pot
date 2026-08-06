@@ -19,11 +19,8 @@ import com.knowledgemeltingpot.workbench.worker.WorkerJobContext;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
@@ -32,19 +29,23 @@ import org.springframework.stereotype.Component;
 @ConditionalOnExpression("'${workbench.agent.enabled:false}' == 'true' or "
         + "'${workbench.agent.test-stub-enabled:false}' == 'true'")
 public class SceneExplorationJobHandler implements JobHandler {
-    private static final int MAX_CHUNKS = 24;
+    private static final System.Logger LOGGER = System.getLogger(SceneExplorationJobHandler.class.getName());
+    private static final int MAX_CHUNKS = 96;
     private static final int MAX_CONTEXT_CHARS = 30_000;
     private final ExplorationRepository explorations;
     private final ChunkRepository chunks;
     private final SceneExplorationWorkflowPort workflow;
+    private final ExplorationResultValidator resultValidator;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public SceneExplorationJobHandler(ExplorationRepository explorations, ChunkRepository chunks,
-            SceneExplorationWorkflowPort workflow, ObjectMapper objectMapper, Clock clock) {
+            SceneExplorationWorkflowPort workflow, ExplorationResultValidator resultValidator,
+            ObjectMapper objectMapper, Clock clock) {
         this.explorations = explorations;
         this.chunks = chunks;
         this.workflow = workflow;
+        this.resultValidator = resultValidator;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
@@ -84,9 +85,10 @@ public class SceneExplorationJobHandler implements JobHandler {
                 return fail(sessionId, "EXPLORATION_CONTEXT_EMPTY", "Staged materials contain no parsed chunks");
             }
             context.progress(40, "exploration-agent-running");
-            var result = workflow.explore(new SceneExplorationWorkflowPort.ExplorationRequest(sessionId,
-                    session.modelConfigVersionId(), session.skillVersionId(), sources));
-            List<ExplorationCandidate> candidates = validate(sessionId, result, materials);
+            var request = new SceneExplorationWorkflowPort.ExplorationRequest(sessionId,
+                    session.modelConfigVersionId(), session.skillVersionId(), sources);
+            var result = resultValidator.normalize(request, workflow.explore(request));
+            List<ExplorationCandidate> candidates = toCandidates(sessionId, result, sources);
             context.progress(85, "exploration-candidates-validating");
             if (!explorations.completeAnalysis(sessionId, candidates, Instant.now(clock))) {
                 ExplorationSession current = explorations.find(sessionId).orElse(session);
@@ -98,6 +100,8 @@ public class SceneExplorationJobHandler implements JobHandler {
             return JobHandlingResult.success("exploration:" + sessionId);
         } catch (AgentKnowledgeExtractionWorkflowAdapter.WorkflowGenerationException exception) {
             return fail(sessionId, publicCode(exception.code()), "Scene exploration did not complete");
+        } catch (ExplorationResultValidator.ValidationException exception) {
+            return fail(sessionId, exception.code(), "Scene exploration result failed validation");
         } catch (IllegalArgumentException | JsonProcessingException exception) {
             return fail(sessionId, "EXPLORATION_RESULT_INVALID", "Scene exploration result failed validation");
         }
@@ -106,67 +110,43 @@ public class SceneExplorationJobHandler implements JobHandler {
     private List<SceneExplorationWorkflowPort.ExplorationSource> sources(List<Material> materials)
             throws JsonProcessingException {
         Map<UUID, List<MaterialChunk>> byMaterial = chunks.findForMaterials(materials.stream().map(Material::id).toList());
+        ExplorationContextSelector.Selection selection = ExplorationContextSelector.select(
+                materials, byMaterial, MAX_CHUNKS, MAX_CONTEXT_CHARS);
         List<SceneExplorationWorkflowPort.ExplorationSource> result = new ArrayList<>();
-        int remainingChars = MAX_CONTEXT_CHARS;
-        int remainingChunks = MAX_CHUNKS;
-        for (Material material : materials) {
+        int sourceOrdinal = 1;
+        for (ExplorationContextSelector.SelectedMaterial materialSelection : selection.materials()) {
             List<SceneExplorationWorkflowPort.ExplorationChunk> selected = new ArrayList<>();
-            for (MaterialChunk chunk : byMaterial.getOrDefault(material.id(), List.of())) {
-                if (remainingChunks == 0 || remainingChars == 0) break;
-                String content = chunk.content().length() <= remainingChars
-                        ? chunk.content() : chunk.content().substring(0, remainingChars);
-                if (content.isBlank()) continue;
+            for (ExplorationContextSelector.SelectedChunk selectedChunk : materialSelection.chunks()) {
+                MaterialChunk chunk = selectedChunk.chunk();
                 selected.add(new SceneExplorationWorkflowPort.ExplorationChunk(chunk.sourceRefCode(),
-                        objectMapper.writeValueAsString(chunk.locator()), content));
-                remainingChars -= content.length();
-                remainingChunks--;
+                        objectMapper.writeValueAsString(chunk.locator()), selectedChunk.content()));
             }
-            if (!selected.isEmpty()) {
-                result.add(new SceneExplorationWorkflowPort.ExplorationSource(material.id(), material.fileName(), selected));
-            }
-            if (remainingChunks == 0 || remainingChars == 0) break;
+            Material material = materialSelection.material();
+            result.add(new SceneExplorationWorkflowPort.ExplorationSource(material.id(),
+                    "MAT-%02d".formatted(sourceOrdinal++), material.fileName(), selected));
         }
+        LOGGER.log(System.Logger.Level.INFO,
+                "Scene exploration context prepared: materials={0}, chunks={1}, characters={2}",
+                result.size(), selection.chunkCount(), selection.characterCount());
         return result;
     }
 
-    private List<ExplorationCandidate> validate(UUID sessionId, SceneExplorationWorkflowPort.ExplorationResult result,
-            List<Material> materials) {
-        if (result == null || result.candidates().isEmpty() || result.candidates().size() > 5) {
-            throw new IllegalArgumentException("between one and five candidates are required");
-        }
-        Set<UUID> allowedMaterials = new HashSet<>(materials.stream().map(Material::id).toList());
-        Set<Integer> ranks = new HashSet<>();
+    private List<ExplorationCandidate> toCandidates(UUID sessionId,
+            SceneExplorationWorkflowPort.ExplorationResult result,
+            List<SceneExplorationWorkflowPort.ExplorationSource> sources) {
+        Map<String, UUID> materialsByCode = sources.stream().collect(java.util.stream.Collectors.toMap(
+                SceneExplorationWorkflowPort.ExplorationSource::sourceCode,
+                SceneExplorationWorkflowPort.ExplorationSource::materialId));
         List<ExplorationCandidate> candidates = new ArrayList<>();
         Instant now = Instant.now(clock);
         for (var draft : result.candidates()) {
-            if (!ranks.add(draft.rank()) || draft.rank() < 1 || draft.rank() > result.candidates().size()) {
-                throw new IllegalArgumentException("candidate ranks must be unique and contiguous");
-            }
-            if (draft.materialIds().isEmpty() || !allowedMaterials.containsAll(draft.materialIds())
-                    || new HashSet<>(draft.materialIds()).size() != draft.materialIds().size()) {
-                throw new IllegalArgumentException("candidate material references are invalid");
-            }
-            if (draft.tags().size() > 8 || draft.tags().stream().anyMatch(tag -> tag == null || tag.isBlank()
-                    || tag.length() > 40)) {
-                throw new IllegalArgumentException("candidate tags are invalid");
-            }
-            require(draft.sceneName(), 200); require(draft.subSceneName(), 200); require(draft.rationale(), 2_000);
+            List<UUID> materialIds = draft.sourceCodes().stream().map(materialsByCode::get).toList();
             candidates.add(new ExplorationCandidate(UUID.randomUUID(), sessionId, draft.rank(), draft.sceneName(),
-                    bounded(draft.sceneDescription(), 10_000), draft.subSceneName(),
-                    bounded(draft.subSceneDescription(), 10_000), draft.rationale(), draft.valueLevel(),
-                    draft.estimatedRuleCount(), draft.estimatedFlowCount(), draft.tags(), draft.materialIds(), now));
+                    draft.sceneDescription(), draft.subSceneName(), draft.subSceneDescription(), draft.rationale(),
+                    draft.valueLevel(), draft.estimatedRuleCount(), draft.estimatedFlowCount(), draft.tags(),
+                    materialIds, now));
         }
         return candidates.stream().sorted(java.util.Comparator.comparingInt(ExplorationCandidate::rank)).toList();
-    }
-
-    private void require(String value, int max) {
-        if (value == null || value.isBlank() || value.length() > max) throw new IllegalArgumentException("text invalid");
-    }
-
-    private String bounded(String value, int max) {
-        String normalized = value == null ? "" : value;
-        if (normalized.length() > max) throw new IllegalArgumentException("text too long");
-        return normalized;
     }
 
     private JobHandlingResult fail(UUID sessionId, String code, String message) {

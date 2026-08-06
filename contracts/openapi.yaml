@@ -420,6 +420,15 @@ paths:
           content: { application/json: { schema: { $ref: '#/components/schemas/ExplorationDetail' } } }
         '401': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+    delete:
+      summary: Remove an exploration from the active ledger while preserving evidence and audit lineage
+      operationId: deleteExploration
+      responses:
+        '204':
+          description: Exploration archived and removed from active queries.
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /explorations/{sessionId}/analysis-jobs:
     parameters:
       - name: sessionId
@@ -728,6 +737,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /jobs/{jobId}/agent-executions:
+    get:
+      summary: List redacted Agent execution provenance for a job
+      operationId: listJobAgentExecutions
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Immutable version and hash provenance. Prompts, source text and raw model output are absent.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AgentExecutionAttempt'
         '404':
           $ref: '#/components/responses/Problem'
   /jobs/{jobId}/events:
@@ -1642,6 +1668,50 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/EffectiveAgentConfiguration' }
         '404': { $ref: '#/components/responses/Problem' }
+  /agent-mounts/effective-global:
+    get:
+      summary: Resolve the effective Global configuration for all seven Agent roles
+      operationId: resolveGlobalAgentMounts
+      responses:
+        '200':
+          description: Seven global effective configurations including readiness and immutable hashes.
+          content:
+            application/json:
+              schema:
+                type: array
+                minItems: 7
+                maxItems: 7
+                items: { $ref: '#/components/schemas/EffectiveAgentConfiguration' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /operation-readiness:
+    get:
+      summary: Check Agent and business prerequisites before creating a long-running Job
+      operationId: getOperationReadiness
+      parameters:
+        - name: operation
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/ReadinessOperation' }
+        - name: explorationSessionId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: sceneId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: subSceneId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: roundId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Authoritative non-mutating readiness report with repair actions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationReadiness' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /agent-mounts/versions:
     post:
       summary: Append one immutable Agent mount version
@@ -2416,6 +2486,39 @@ components:
         lineage:
           type: array
           items: { $ref: '#/components/schemas/AgentMountVersion' }
+    ReadinessOperation:
+      type: string
+      enum: [SCENE_EXPLORE, EXTRACT, ALIGN, GENERATE_ASSETS, RELEASE, EVALUATE]
+    OperationReadiness:
+      type: object
+      additionalProperties: false
+      required: [operation, ready, agents, blockers]
+      properties:
+        operation: { $ref: '#/components/schemas/ReadinessOperation' }
+        ready: { type: boolean }
+        agents:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [role, configured, enabled]
+            properties:
+              role: { $ref: '#/components/schemas/AgentRole' }
+              configured: { type: boolean }
+              enabled: { type: boolean }
+              modelConfigVersionId: { type: [string, 'null'], format: uuid }
+              skillVersionId: { type: [string, 'null'], format: uuid }
+              effectiveConfigHash: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        blockers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, message, actionHref]
+            properties:
+              code: { type: string }
+              message: { type: string }
+              actionHref: { type: string }
     AgentConfigurationCatalog:
       type: object
       additionalProperties: false
@@ -2688,6 +2791,29 @@ components:
         errorCode: { type: [string, 'null'] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    AgentExecutionAttempt:
+      type: object
+      additionalProperties: false
+      description: Redacted Agent execution provenance without prompts, source text, credentials or raw model output.
+      required: [id, jobId, jobAttempt, role, assetType, modelConfigVersionId, skillVersionId,
+        assetId, effectiveConfigHash, inputHash, outputHash, status, failureCode, startedAt]
+      properties:
+        id: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        jobAttempt: { type: integer, minimum: 1 }
+        role: { $ref: '#/components/schemas/AgentRole' }
+        assetType: { $ref: '#/components/schemas/AssetType' }
+        assetId: { type: string, format: uuid }
+        modelConfigVersionId: { type: string, format: uuid }
+        skillVersionId: { type: string, format: uuid }
+        roleConfigVersionId: { type: [string, 'null'], format: uuid }
+        effectiveConfigHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        inputHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        outputHash: { type: string, pattern: '^(|[0-9a-f]{64})$' }
+        status: { type: string, enum: [RUNNING, SUCCEEDED, FAILED] }
+        failureCode: { type: string, maxLength: 160 }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
     JobEventEnvelope:
       type: object
       additionalProperties: false

@@ -13,7 +13,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: "/", label: "工作台", icon: "grid" },
-  { href: "/explore", label: "探索", icon: "search" },
+  { href: "/explore", label: "场景发现", icon: "search" },
   { href: "/agents", label: "智能体", icon: "bot" },
   { href: "/skills", label: "Skill", icon: "skill" },
   { href: "/models", label: "模型", icon: "model" },

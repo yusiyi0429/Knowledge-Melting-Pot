@@ -22,6 +22,7 @@ export type GlyphName =
   | "logout"
   | "menu"
   | "close"
+  | "trash"
   | "history"
   | "link";
 
@@ -46,6 +47,7 @@ const paths: Record<GlyphName, ReactNode> = {
   logout: <><path d="M10 4H5v16h5M14 8l4 4-4 4M8 12h10"/></>,
   menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>,
   close: <path d="M6 6l12 12M18 6L6 18"/>,
+  trash: <><path d="M4 7h16M9 3h6l1 4H8zM7 7l1 14h8l1-14M10 11v6M14 11v6"/></>,
   history: <><path d="M4 8V3M4 3h5M4 4a9 9 0 101-1M12 7v5l3 2"/></>,
   link: <><path d="M10 13a5 5 0 007 0l2-2a5 5 0 00-7-7l-1 1M14 11a5 5 0 00-7 0l-2 2a5 5 0 007 7l1-1"/></>,
 };

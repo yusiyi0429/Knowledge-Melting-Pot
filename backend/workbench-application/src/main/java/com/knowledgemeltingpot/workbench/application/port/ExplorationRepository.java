@@ -18,6 +18,8 @@ public interface ExplorationRepository {
 
     List<ExplorationSession> findRecent(int limit);
 
+    boolean archive(UUID sessionId, int expectedVersion, UUID actorId, Instant archivedAt);
+
     boolean linkMaterial(UUID sessionId, UUID materialId, Instant createdAt);
 
     List<Material> findMaterials(UUID sessionId);

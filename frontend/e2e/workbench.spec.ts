@@ -28,6 +28,15 @@ test.beforeEach(async ({ page }) => {
     }
     await route.continue();
   });
+  await page.route("**/api/v1/operation-readiness?*", async (route) => {
+    const operation = new URL(route.request().url()).searchParams.get("operation") ?? "EXTRACT";
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      operation, ready: true, agents: [], blockers: [],
+    }) });
+  });
+  await page.route("**/api/v1/jobs/*/agent-executions", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+  });
 });
 
 test("walks through the auditable extraction and partial-release prototype", async ({ page }) => {
@@ -282,6 +291,120 @@ test("explores staged evidence, searches globally, and reads task notifications"
   expect(acceptanceHeaders).toEqual({ ifMatch: etag, csrf: "exploration-csrf" });
 });
 
+test("removes a failed exploration from the active ledger after confirmation", async ({ page }) => {
+  const explorationId = "3f7a1c2e-0000-4000-8000-000000000061";
+  const session = {
+    id: explorationId,
+    title: "未完成的贷款分类探索",
+    status: "FAILED",
+    exploreJobId: "3f7a1c2e-0000-4000-8000-000000000062",
+    version: 2,
+    createdAt: "2026-08-06T01:00:00Z",
+    updatedAt: "2026-08-06T01:05:00Z",
+  };
+  let deleted = false;
+  let deleteCsrf: string | null = null;
+
+  await page.route("**/api/v1/auth/csrf", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "delete-exploration-csrf",
+    }) });
+  });
+  await page.route("**/api/v1/explorations", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(deleted ? [] : [session]) });
+  });
+  await page.route(`**/api/v1/explorations/${explorationId}`, async (route) => {
+    if (route.request().method() === "DELETE") {
+      deleteCsrf = route.request().headers()["x-xsrf-token"] ?? null;
+      deleted = true;
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      session,
+      etag: `"${"b".repeat(64)}"`,
+      materials: [],
+      candidates: [],
+      acceptance: null,
+    }) });
+  });
+
+  await page.goto("/explore");
+  await expect(page.getByText("未完成的贷款分类探索").first()).toBeVisible();
+  const ledgerDelete = page.getByRole("button", { name: "删除探索记录：未完成的贷款分类探索" });
+  await expect(ledgerDelete).toBeVisible();
+  await expect(ledgerDelete).toHaveCSS("opacity", "1");
+  await expect(page.getByRole("button", { name: "删除记录", exact: true }).first()).toBeVisible();
+  await ledgerDelete.click();
+  await expect(page.getByRole("heading", { name: "删除探索记录" })).toBeVisible();
+  await expect(page.getByText("证据素材、任务事件和审计链路仍会保留。"))
+    .toBeVisible();
+  await page.getByRole("button", { name: "确认删除记录" }).click();
+
+  await expect(page.getByText("暂无探索")).toBeVisible();
+  await expect(page.getByText("未完成的贷款分类探索")).toHaveCount(0);
+  expect(deleteCsrf).toBe("delete-exploration-csrf");
+});
+
+test("retries a failed exploration in place and surfaces the stable validation reason", async ({ page }) => {
+  const explorationId = "3f7a1c2e-0000-4000-8000-000000000071";
+  const jobId = "3f7a1c2e-0000-4000-8000-000000000072";
+  let retried = false;
+  let polls = 0;
+  const session = () => ({
+    id: explorationId,
+    title: "贷款分类候选发现",
+    status: retried && polls > 1 ? "READY" : retried ? "ANALYZING" : "FAILED",
+    exploreJobId: jobId,
+    version: retried ? 3 : 2,
+    createdAt: "2026-08-06T01:00:00Z",
+    updatedAt: "2026-08-06T01:05:00Z",
+  });
+
+  await page.route("**/api/v1/auth/csrf", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "retry-exploration-csrf",
+    }) });
+  });
+  await page.route("**/api/v1/explorations", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([session()]) });
+  });
+  await page.route(`**/api/v1/explorations/${explorationId}`, async (route) => {
+    const ready = session().status === "READY";
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      session: session(), etag: `"${"c".repeat(64)}"`, materials: [], acceptance: null,
+      candidates: ready ? [{ id: "candidate-1", rank: 1, sceneName: "贷款风险分类",
+        sceneDescription: "", subSceneName: "逾期天数分类", subSceneDescription: "",
+        rationale: "来自 MAT-01", valueLevel: "HIGH", estimatedRuleCount: 8,
+        estimatedFlowCount: 2, tags: ["贷款"], materialIds: ["material-1"] }] : [],
+    }) });
+  });
+  await page.route(`**/api/v1/jobs/${jobId}/retry`, async (route) => {
+    retried = true;
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({
+      jobId, status: "QUEUED", statusUrl: `/api/v1/jobs/${jobId}`,
+      eventsUrl: `/api/v1/jobs/${jobId}/events`,
+    }) });
+  });
+  await page.route(`**/api/v1/jobs/${jobId}`, async (route) => {
+    if (retried) polls += 1;
+    const status = retried && polls > 1 ? "SUCCEEDED" : retried ? "RUNNING" : "FAILED";
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      id: jobId, type: "SCENE_EXPLORE", status, stage: status, percent: status === "SUCCEEDED" ? 100 : 40,
+      attempt: retried ? 2 : 1,
+      errorCode: retried ? null : "EXPLORATION_SOURCE_REFERENCE_INVALID",
+      createdAt: "2026-08-06T01:00:00Z", updatedAt: "2026-08-06T01:05:00Z",
+    }) });
+  });
+
+  await page.goto("/explore");
+  await expect(page.getByText("EXPLORATION_SOURCE_REFERENCE_INVALID")).toBeVisible();
+  await expect(page.getByText("候选引用了本次素材集合之外的来源。")).toBeVisible();
+  await page.getByRole("button", { name: "修复后重试" }).click();
+  await expect(page.getByRole("heading", { name: "贷款风险分类" })).toBeVisible();
+  expect(retried).toBe(true);
+});
+
 test("governs agent mounts with ETag writes and transactional import", async ({ page }) => {
   const sceneId = "3f7a1c2e-0000-4000-8000-000000000041";
   const subSceneId = "3f7a1c2e-0000-4000-8000-000000000042";
@@ -374,6 +497,56 @@ test("governs agent mounts with ETag writes and transactional import", async ({ 
   await page.getByRole("button", { name: "确认事务应用" }).click();
   await expect(page.getByRole("status")).toContainText("配置导入已作为一组不可变版本应用");
   expect(importApplyIfMatch).toBe(manifestHash);
+});
+
+test("prepares all seven global agents in one audited transaction", async ({ page }) => {
+  const modelVersionId = "4f7a1c2e-0000-4000-8000-000000000001";
+  const manifestHash = "d".repeat(64);
+  const roles = [
+    ["SCENE_EXPLORER", "场景探索智能体", "环节一", "场景探索基础模板"],
+    ["KNOWLEDGE_EXTRACTOR", "知识萃取智能体", "环节二", "知识萃取基础模板"],
+    ["ALIGNMENT_REVIEWER", "冲突检测与对齐智能体", "环节二", "冲突检测与对齐基础模板"],
+    ["RULE_CATALOG_GENERATOR", "规则库生成智能体", "环节三", "规则库生成基础模板"],
+    ["DECISION_FLOW_GENERATOR", "思维链生成智能体", "环节三", "研判流程生成基础模板"],
+    ["SKILL_PACKAGER", "Skill 生成智能体", "环节三", "Skill 打包基础模板"],
+    ["QA_EVALUATOR", "QA 与评测智能体", "环节三", "QA 与评测基础模板"],
+  ] as const;
+  let previewBody: { scope: string; scopeId: string | null; roles: Array<Record<string, unknown>> } | null = null;
+
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({ id: "admin-1", username: "admin", displayName: "管理员", enabled: true, roles: ["ADMIN"], mustChangePassword: false }) }));
+  await page.route("**/api/v1/auth/csrf", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({ headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "csrf" }) }));
+  await page.route("**/api/v1/agent-roles", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify(roles.map(([role, displayName, stage]) => ({ role, displayName, stage, description: `${displayName}职责` }))) }));
+  await page.route("**/api/v1/agent-configuration-catalog", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({
+      models: [{ versionId: modelVersionId, connectionId: "connection-1", connectionName: "内网模型", provider: "OPENAI_COMPATIBLE", version: 1, modelId: "local-model", temperature: 0.2, maxOutputTokens: 4096 }],
+      skills: roles.map(([role, , , name], index) => ({ versionId: `4f7a1c2e-0000-4000-8000-${String(index + 10).padStart(12, "0")}`, skillId: `skill-${role}`, name, kind: "TEMPLATE", sceneId: null, version: 1, packageHash: "e".repeat(64) })),
+    }) }));
+  await page.route("**/api/v1/scenes?page=0&size=100", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({ items: [], page: 0, size: 100, total: 0 }) }));
+  await page.route("**/api/v1/agent-mounts?*", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({ scope: "GLOBAL", scopeId: null, sceneId: null, etag: "a".repeat(64), mounts: [] }) }));
+  await page.route("**/api/v1/agent-mounts/effective-global", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify(roles.map(([role, displayName, stage]) => ({ role, displayName, stage, enabled: false, configured: false,
+      modelConfigVersionId: null, skillVersionId: null, optionsJson: "{}", effectiveHash: "f".repeat(64), effectiveMountVersionId: null,
+      enabledSource: null, modelSource: null, skillSource: null, optionsSource: "TEMPLATE", lineage: [] }))) }));
+  await page.route("**/api/v1/configuration-imports/previews", async (route) => {
+    previewBody = route.request().postDataJSON() as typeof previewBody;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "global-import", schemaVersion: "1.0",
+      scope: "GLOBAL", scopeId: null, sceneId: null, baseEtag: "a".repeat(64), manifestJson: "{}", manifestHash,
+      diffJson: "[]", createdBy: "admin-1", createdAt: "2026-08-06T00:00:00Z", appliedBy: null, appliedAt: null, applied: false }) });
+  });
+  await page.route("**/api/v1/configuration-imports/global-import/apply", (route) => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({ scope: "GLOBAL", scopeId: null, sceneId: null, etag: "b".repeat(64), mounts: [] }) }));
+
+  await page.goto("/agents");
+  await page.getByRole("button", { name: "一键准备 7 个智能体" }).click();
+  await expect(page.getByRole("status")).toContainText("7 个智能体已全局启用");
+  expect(previewBody).toMatchObject({ scope: "GLOBAL", scopeId: null });
+  expect(previewBody?.roles).toHaveLength(7);
+  expect(previewBody?.roles.every((role) => role.enabled === true && role.modelConfigVersionId === modelVersionId)).toBe(true);
 });
 
 test("online login sends CSRF metadata and routes first-login users to password change", async ({ page }) => {
@@ -1110,12 +1283,12 @@ test("dashboard lists real scenes, filters, paginates, and creates a new scene",
   await expect(page.getByRole("button", { name: "删除小微企业授信准入" })).toHaveCount(0);
   expect(deletedSceneIds).toEqual(["3f7a1c2e-0000-4000-8000-000000000002"]);
 
-  // Create from the header entry: CSRF POST, then navigation to the returned UUID.
-  await page.getByRole("button", { name: "新建萃取场景" }).first().click();
+  // Create from the direct STEP 1 entry: CSRF POST, then navigation to the returned UUID.
+  await page.getByRole("button", { name: "直接创建场景", exact: true }).first().click();
   await expect(page.getByRole("dialog", { name: "新建萃取场景" })).toBeVisible();
   await page.getByLabel("场景名称").fill("可疑交易模式识别");
   await page.getByLabel("描述（可选）").fill("沉淀可疑交易识别规则");
-  await page.getByRole("button", { name: "创建场景" }).click();
+  await page.getByRole("button", { name: "创建场景", exact: true }).click();
   await expect(page).toHaveURL(/\/scenes\/3f7a1c2e-0000-4000-8000-000000000003$/);
   expect(createBodies).toHaveLength(1);
   expect(createBodies[0]).toEqual({ name: "可疑交易模式识别", description: "沉淀可疑交易识别规则" });

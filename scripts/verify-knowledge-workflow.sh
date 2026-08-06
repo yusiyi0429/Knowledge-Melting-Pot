@@ -258,6 +258,9 @@ scene_etag=$(printf '%s' "$extract_mount_response" | jq -er .etag)
 align_import_body=$(jq -cn --arg scene "$scene_id" --arg model "$model_version_id" --arg skill "$skill_version_id" \
   '{scope:"SCENE",scopeId:$scene,roles:[
     {role:"ALIGNMENT_REVIEWER",enabled:true,modelConfigVersionId:$model,skillVersionId:$skill,options:{strategy:"deterministic-acceptance"}},
+    {role:"RULE_CATALOG_GENERATOR",enabled:true,modelConfigVersionId:$model,skillVersionId:$skill,options:{output:"xlsx-json"}},
+    {role:"DECISION_FLOW_GENERATOR",enabled:true,modelConfigVersionId:$model,skillVersionId:$skill,options:{output:"markdown-json-mermaid"}},
+    {role:"SKILL_PACKAGER",enabled:true,modelConfigVersionId:$model,skillVersionId:$skill,options:{executionMode:"RESOURCE_ONLY"}},
     {role:"QA_EVALUATOR",enabled:true,modelConfigVersionId:$model,skillVersionId:$skill,options:{scoring:"exact-match",expectedVisibility:"worker-only"}}
   ]}')
 align_preview=$(api_request POST /api/v1/configuration-imports/previews "$align_import_body")
@@ -266,10 +269,13 @@ align_manifest_hash=$(printf '%s' "$align_preview" | jq -er .manifestHash)
 align_apply=$(curl -fsS -b "$cookie_jar" -H "$csrf_header: $csrf_token" \
   -H "If-Match: $align_manifest_hash" -X POST \
   "$web_base_url/api/v1/configuration-imports/$align_import_id/apply")
-printf '%s' "$align_apply" | jq -er '.mounts | length == 3' >/dev/null
+printf '%s' "$align_apply" | jq -er '.mounts | length == 6' >/dev/null
 effective_agents=$(api_request GET "/api/v1/agent-mounts/effective?sceneId=$scene_id&subSceneId=$sub_scene_id")
 printf '%s' "$effective_agents" | jq -er \
-  '[.[] | select((.role == "KNOWLEDGE_EXTRACTOR" or .role == "ALIGNMENT_REVIEWER" or .role == "QA_EVALUATOR") and .enabled == true and .modelConfigVersionId != null and .skillVersionId != null)] | length == 3' >/dev/null
+  '[.[] | select((.role == "KNOWLEDGE_EXTRACTOR" or .role == "ALIGNMENT_REVIEWER" or
+    .role == "RULE_CATALOG_GENERATOR" or .role == "DECISION_FLOW_GENERATOR" or
+    .role == "SKILL_PACKAGER" or .role == "QA_EVALUATOR") and .enabled == true and
+    .modelConfigVersionId != null and .skillVersionId != null)] | length == 6' >/dev/null
 
 verify_stage=global-scene-explorer-setup
 global_scope=$(api_request GET "/api/v1/agent-mounts?scope=GLOBAL")
@@ -398,6 +404,11 @@ wait_job_success "$asset_job"
 asset_list=$(api_request GET "/api/v1/subscenes/$sub_scene_id/assets")
 printf '%s' "$asset_list" | jq -er --arg revision "$finalized_revision" \
   'length == 5 and all(.[]; .status == "READY" and .documentRevisionId == $revision)' >/dev/null
+asset_executions=$(api_request GET "/api/v1/jobs/$asset_job/agent-executions")
+printf '%s' "$asset_executions" | jq -er \
+  'length == 5 and all(.[]; .status == "SUCCEEDED" and (.effectiveConfigHash | length) == 64 and
+    (.inputHash | length) == 64 and (.outputHash | length) == 64 and .assetId != null) and
+    ([.[].role] | unique | sort) == ["DECISION_FLOW_GENERATOR","QA_EVALUATOR","RULE_CATALOG_GENERATOR","SKILL_PACKAGER"]' >/dev/null
 
 verify_stage=release-publication
 release_body=$(jq -cn --arg sub "$sub_scene_id" \
@@ -411,7 +422,10 @@ release_manifest=$(api_request GET "/api/v1/releases/$release_id/manifest")
 printf '%s' "$release_manifest" | jq -er \
   --arg sub "$sub_scene_id" --arg model "$model_version_id" --arg skill "$skill_version_id" \
   'any(.subScenes[]; .subSceneId == $sub and any(.agentConfigurations[];
-    .role == "QA_EVALUATOR" and .enabled == true and .model.configVersionId == $model and .skill.skillVersionId == $skill))' >/dev/null
+    .role == "QA_EVALUATOR" and .enabled == true and .model.configVersionId == $model and .skill.skillVersionId == $skill)) and
+   all(.subScenes[] | select(.subSceneId == $sub) | .assets[];
+    .modelConfigVersionId == $model and .skillVersionId == $skill and
+    (.effectiveConfigHash | length) == 64 and (.inputHash | length) == 64 and (.outputHash | length) == 64)' >/dev/null
 
 verify_stage=release-bound-holdout-evaluation
 evaluation_body=$(jq -cn --arg round "$round_id" '{roundId:$round}')
@@ -482,8 +496,8 @@ printf '%s' "$notification_json" | jq -er --arg job "$explore_job" \
 
 verify_stage=database-invariants
 migrations=$(psql_query \
-  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11','12','13','14');")
-assert_equal "$migrations" '1:true,2:true,3:true,4:true,5:true,6:true,7:true,8:true,9:true,10:true,11:true,12:true,13:true,14:true' migrations
+  "SELECT string_agg(version || ':' || success, ',' ORDER BY installed_rank) FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20');")
+assert_equal "$migrations" '1:true,2:true,3:true,4:true,5:true,6:true,7:true,8:true,9:true,10:true,11:true,12:true,13:true,14:true,15:true,16:true,17:true,18:true,19:true,20:true' migrations
 run_stage=$(psql_query "SELECT stage FROM extraction_run WHERE job_id='$extract_job';")
 assert_equal "$run_stage" SUCCEEDED extraction-stage
 role_config_pinned=$(psql_query "SELECT (role_config_version_id IS NOT NULL) || ':' || (role_config_hash IS NOT NULL) FROM extraction_run WHERE job_id='$extract_job';")
@@ -506,6 +520,8 @@ evaluation_cases=$(psql_query "SELECT COUNT(*) FROM evaluation_case WHERE evalua
 assert_equal "$evaluation_cases" 3 evaluation-cases
 evaluation_results=$(psql_query "SELECT COUNT(*) FROM evaluation_case_result WHERE evaluation_run_id='$evaluation_run_id' AND outcome='PASSED';")
 assert_equal "$evaluation_results" 3 evaluation-results
+asset_agent_attempts=$(psql_query "SELECT COUNT(*) || ':' || COUNT(DISTINCT asset_id) || ':' || COUNT(DISTINCT asset_type) FROM agent_execution_attempt WHERE job_id='$asset_job' AND status='SUCCEEDED' AND length(output_hash)=64;")
+assert_equal "$asset_agent_attempts" '5:5:5' asset-agent-attempts
 proposal_status=$(psql_query "SELECT CASE WHEN a.proposal_id IS NULL THEN p.status ELSE 'ADOPTED' END FROM alignment_proposal p LEFT JOIN alignment_proposal_adoption a ON a.proposal_id=p.id WHERE p.id='$proposal_id';")
 assert_equal "$proposal_status" ADOPTED alignment-proposal-status
 alignment_role_config=$(psql_query "SELECT (payload ? 'roleConfigVersionId') || ':' || (payload ? 'roleConfigHash') FROM job WHERE id='$align_job';")
@@ -523,8 +539,8 @@ assert_equal "$candidate_material" 1 exploration-candidate-material
 explore_notification=$(psql_query "SELECT COUNT(*) FROM user_notification WHERE resource_id='$explore_job' AND notification_type='JOB_SUCCEEDED';")
 assert_equal "$explore_notification" 1 exploration-notification
 
-printf 'KNOWLEDGE_WORKFLOW_OK migrations=%s source_refs=%s map_rows=%s reduce_rows=%s projections=%s role_config=%s import_applied=%s invalid_markdown=%s stale_adopt=%s proposal=%s release=%s evaluation=%s:%s/%s accuracy=1.000000 exploration=%s blob_reused=%s search=true notification=%s\n' \
-  "$migrations" "$source_ref_count" "$map_rows" "$reduce_rows" "$projection_rows" "$role_config_pinned" "$import_applied" "$invalid_status" "$stale_status" "$proposal_status" "$release_hash" "$evaluation_state" "$evaluation_results" "$evaluation_cases" "$exploration_state" "$reused_blob" "$explore_notification"
+printf 'KNOWLEDGE_WORKFLOW_OK migrations=%s source_refs=%s map_rows=%s reduce_rows=%s projections=%s role_config=%s asset_agents=%s import_applied=%s invalid_markdown=%s stale_adopt=%s proposal=%s release=%s evaluation=%s:%s/%s accuracy=1.000000 exploration=%s blob_reused=%s search=true notification=%s\n' \
+  "$migrations" "$source_ref_count" "$map_rows" "$reduce_rows" "$projection_rows" "$role_config_pinned" "$asset_agent_attempts" "$import_applied" "$invalid_status" "$stale_status" "$proposal_status" "$release_hash" "$evaluation_state" "$evaluation_results" "$evaluation_cases" "$exploration_state" "$reused_blob" "$explore_notification"
 
 cleanup_compose
 trap - 0 1 2 15

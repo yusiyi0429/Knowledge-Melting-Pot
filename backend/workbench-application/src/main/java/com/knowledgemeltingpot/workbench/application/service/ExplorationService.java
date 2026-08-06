@@ -80,6 +80,21 @@ public class ExplorationService {
     }
 
     @Transactional
+    public void delete(UUID sessionId, UUID actorId, String traceId) {
+        ExplorationSession session = explorations.lock(sessionId)
+                .orElseThrow(() -> new NotFoundException("exploration session does not exist"));
+        if (session.status() == ExplorationStatus.ANALYZING) {
+            throw new ConflictException("an exploration cannot be deleted while analysis is running");
+        }
+        Instant archivedAt = Instant.now(clock);
+        if (!explorations.archive(sessionId, session.version(), actorId, archivedAt)) {
+            throw new ConflictException("exploration changed while it was being deleted");
+        }
+        audit.record(actorId, "EXPLORATION_ARCHIVED", "EXPLORATION", sessionId, Map.of(
+                "title", session.title(), "status", session.status().name(), "archivedAt", archivedAt), traceId);
+    }
+
+    @Transactional
     public JobSubmission start(UUID sessionId, UUID actorId, String idempotencyKey, String traceId) {
         ExplorationSession session = explorations.lock(sessionId)
                 .orElseThrow(() -> new NotFoundException("exploration session does not exist"));

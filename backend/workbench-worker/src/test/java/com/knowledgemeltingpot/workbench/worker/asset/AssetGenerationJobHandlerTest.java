@@ -11,11 +11,15 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.knowledgemeltingpot.workbench.application.port.LeasedJob;
+import com.knowledgemeltingpot.workbench.application.port.AgentExecutionAttemptRepository;
+import com.knowledgemeltingpot.workbench.application.port.AssetGenerationWorkflowPort;
 import com.knowledgemeltingpot.workbench.application.port.MaterialSelection;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
 import com.knowledgemeltingpot.workbench.application.service.AssetService;
+import com.knowledgemeltingpot.workbench.application.service.AssetService.FrozenAgentConfiguration;
 import com.knowledgemeltingpot.workbench.application.service.DocumentService;
 import com.knowledgemeltingpot.workbench.domain.Asset;
+import com.knowledgemeltingpot.workbench.domain.AgentRole;
 import com.knowledgemeltingpot.workbench.domain.AssetStatus;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
 import com.knowledgemeltingpot.workbench.domain.DocumentRevision;
@@ -59,6 +63,8 @@ class AssetGenerationJobHandlerTest {
     private ObjectStoragePort storage;
     private AssetContentFactory factory;
     private AssetGenerationJobHandler handler;
+    private AssetGenerationWorkflowPort workflow;
+    private AgentExecutionAttemptRepository attempts;
     private UUID subSceneId;
     private DocumentRevision revision;
 
@@ -68,19 +74,28 @@ class AssetGenerationJobHandlerTest {
         documentService = mock(DocumentService.class);
         storage = mock(ObjectStoragePort.class);
         factory = new AssetContentFactory(objectMapper);
+        workflow = mock(AssetGenerationWorkflowPort.class);
+        attempts = mock(AgentExecutionAttemptRepository.class);
         handler = new AssetGenerationJobHandler(assetService, documentService, Optional.of(storage), factory,
-                objectMapper);
+                objectMapper, Optional.of(workflow), attempts, Clock.fixed(NOW, ZoneOffset.UTC));
         subSceneId = UUID.randomUUID();
         revision = new DocumentRevision(UUID.randomUUID(), subSceneId, subSceneId, 2, null,
                 "# 逾期分类规则\n\n[SRC-001] 依据一\n\n[SRC-002] 依据二", "revision-hash-123", "note", true,
                 ACTOR_ID, NOW, ACTOR_ID, NOW);
         when(documentService.getRevision(revision.id())).thenReturn(revision);
+        org.mockito.Mockito.lenient().when(attempts.insert(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        org.mockito.Mockito.lenient().when(attempts.markSucceeded(any(), anyString(), any())).thenReturn(true);
+        org.mockito.Mockito.lenient().when(workflow.generate(any())).thenAnswer(invocation -> draft(
+                invocation.getArgument(0)));
     }
 
     private LeasedJob job(Set<AssetType> types) throws Exception {
+        java.util.Map<AssetType, FrozenAgentConfiguration> configurations = new java.util.EnumMap<>(AssetType.class);
+        for (AssetType type : types) configurations.put(type, configuration(type));
         Job domainJob = new Job(UUID.randomUUID(), JobType.GENERATE_ALL, "SUB_SCENE", subSceneId, JobStatus.QUEUED,
                 0, 0, objectMapper.writeValueAsString(Map.of(
-                        "assetTypes", types, "documentRevisionId", revision.id().toString())),
+                        "assetTypes", types, "documentRevisionId", revision.id().toString(),
+                        "agentConfigurations", configurations)),
                 "", "", "", ACTOR_ID, NOW, NOW);
         return new LeasedJob(domainJob, "worker", NOW.plus(Duration.ofMinutes(2)), 1);
     }
@@ -208,7 +223,8 @@ class AssetGenerationJobHandlerTest {
         when(documentService.getRevision(draft.id())).thenReturn(draft);
         Job domainJob = new Job(UUID.randomUUID(), JobType.GENERATE_ASSET, "SUB_SCENE", subSceneId, JobStatus.QUEUED,
                 0, 0, objectMapper.writeValueAsString(Map.of(
-                        "assetTypes", Set.of(AssetType.QA_PAIRS), "documentRevisionId", draft.id().toString())),
+                        "assetTypes", Set.of(AssetType.QA_PAIRS), "documentRevisionId", draft.id().toString(),
+                        "agentConfigurations", Map.of(AssetType.QA_PAIRS, configuration(AssetType.QA_PAIRS)))),
                 "", "", "", ACTOR_ID, NOW, NOW);
 
         JobHandlingResult result = handler.handle(new LeasedJob(domainJob, "worker", NOW.plus(Duration.ofMinutes(2)), 1),
@@ -265,5 +281,23 @@ class AssetGenerationJobHandlerTest {
             }
         }
         return files;
+    }
+
+    private FrozenAgentConfiguration configuration(AssetType type) {
+        return new FrozenAgentConfiguration(AssetService.roleFor(type), UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), "a".repeat(64));
+    }
+
+    private AssetGenerationWorkflowPort.AssetDraft draft(AssetGenerationWorkflowPort.AssetRequest request) {
+        if (request.assetType() == AssetType.EVALUATION_SET) {
+            var source = request.holdoutSources().getFirst();
+            String materialId = source.materialId().toString();
+            return new AssetGenerationWorkflowPort.AssetDraft("留出登记", List.of(
+                    new AssetGenerationWorkflowPort.DraftItem(materialId, "独立评测", "",
+                            List.of(materialId), List.of("holdout"))));
+        }
+        return new AssetGenerationWorkflowPort.AssetDraft("已审计生成", List.of(
+                new AssetGenerationWorkflowPort.DraftItem("R001", "逾期分类规则", "依据一",
+                        List.of("SRC-001"), List.of("NORMAL"))));
     }
 }

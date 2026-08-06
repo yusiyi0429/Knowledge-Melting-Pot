@@ -4,6 +4,7 @@ import com.knowledgemeltingpot.workbench.api.http.RequestIdFilter;
 import com.knowledgemeltingpot.workbench.api.security.CurrentUser;
 import com.knowledgemeltingpot.workbench.api.stream.JobEventStream;
 import com.knowledgemeltingpot.workbench.application.service.JobService;
+import com.knowledgemeltingpot.workbench.application.service.AgentExecutionService;
 import com.knowledgemeltingpot.workbench.application.service.JobSubmission;
 import com.knowledgemeltingpot.workbench.application.service.ExtractionService;
 import com.knowledgemeltingpot.workbench.domain.Job;
@@ -12,6 +13,7 @@ import jakarta.validation.constraints.NotNull;
 import java.net.URI;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.List;
 import java.util.regex.Pattern;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -35,13 +37,15 @@ public class JobController {
     private final ExtractionService extractionService;
     private final JobEventStream eventStream;
     private final CurrentUser currentUser;
+    private final AgentExecutionService agentExecutions;
 
     public JobController(JobService jobService, ExtractionService extractionService, JobEventStream eventStream,
-            CurrentUser currentUser) {
+            CurrentUser currentUser, AgentExecutionService agentExecutions) {
         this.jobService = jobService;
         this.extractionService = extractionService;
         this.eventStream = eventStream;
         this.currentUser = currentUser;
+        this.agentExecutions = agentExecutions;
     }
 
     @PostMapping("/subscenes/{subSceneId}/extraction-jobs")
@@ -65,6 +69,14 @@ public class JobController {
         Job job = jobService.get(jobId);
         requireOwnerOrAdmin(job, authentication);
         return JobResponse.from(job);
+    }
+
+    @GetMapping("/jobs/{jobId}/agent-executions")
+    public List<com.knowledgemeltingpot.workbench.domain.AgentExecutionAttempt> agentExecutions(
+            @PathVariable UUID jobId, Authentication authentication) {
+        Job job = jobService.get(jobId);
+        requireOwnerOrAdmin(job, authentication);
+        return agentExecutions.findByJob(jobId);
     }
 
     @GetMapping(value = "/jobs/{jobId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

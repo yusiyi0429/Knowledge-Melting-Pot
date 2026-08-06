@@ -59,6 +59,11 @@ public class AgentConfigurationController {
         return service.resolve(sceneId, subSceneId);
     }
 
+    @GetMapping("/agent-mounts/effective-global")
+    public List<EffectiveAgentConfiguration> effectiveGlobal() {
+        return service.resolveGlobal();
+    }
+
     @PostMapping("/agent-mounts/versions")
     public ResponseEntity<ScopeConfiguration> append(@Valid @RequestBody MountVersionRequest body,
             @RequestHeader(value = "If-Match", required = false) String ifMatch,

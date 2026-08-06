@@ -17,6 +17,7 @@ import com.knowledgemeltingpot.workbench.application.port.MaterialSelectionPort;
 import com.knowledgemeltingpot.workbench.application.port.ObjectStoragePort;
 import com.knowledgemeltingpot.workbench.application.port.SceneRepository;
 import com.knowledgemeltingpot.workbench.domain.Asset;
+import com.knowledgemeltingpot.workbench.domain.AgentRole;
 import com.knowledgemeltingpot.workbench.domain.AssetStatus;
 import com.knowledgemeltingpot.workbench.domain.AssetType;
 import com.knowledgemeltingpot.workbench.domain.DocumentRevision;
@@ -65,6 +66,8 @@ class AssetServiceTest {
     private SceneRepository sceneRepository;
     @Mock
     private ObjectStoragePort storage;
+    @Mock
+    private AgentConfigurationService agentConfigurations;
 
     private AssetService service;
     private UUID subSceneId;
@@ -73,11 +76,13 @@ class AssetServiceTest {
     @BeforeEach
     void setUp() {
         service = new AssetService(assets, scenes, documents, jobs, materialSelection, sceneRepository,
-                Optional.of(storage), Clock.fixed(NOW, ZoneOffset.UTC));
+                Optional.of(storage), Clock.fixed(NOW, ZoneOffset.UTC), agentConfigurations);
         UUID sceneId = UUID.randomUUID();
         subSceneId = UUID.randomUUID();
         subScene = new SubScene(subSceneId, sceneId, "Sub", "", NOW, NOW);
         org.mockito.Mockito.lenient().when(scenes.getSubScene(subSceneId)).thenReturn(subScene);
+        org.mockito.Mockito.lenient().when(agentConfigurations.resolve(sceneId, subSceneId)).thenReturn(
+                java.util.Arrays.stream(AgentRole.values()).map(this::configured).toList());
     }
 
     @Test
@@ -165,5 +170,11 @@ class AssetServiceTest {
 
     private Asset asset(AssetStatus status) {
         return new Asset(UUID.randomUUID(), subSceneId, AssetType.QA_PAIRS, 1, status, null, "", "", "", NOW, NOW);
+    }
+
+    private AgentConfigurationService.EffectiveAgentConfiguration configured(AgentRole role) {
+        return new AgentConfigurationService.EffectiveAgentConfiguration(role, role.displayName(), role.stage(),
+                true, UUID.randomUUID(), UUID.randomUUID(), "{}", "a".repeat(64), UUID.randomUUID(),
+                null, null, null, "TEMPLATE", List.of());
     }
 }

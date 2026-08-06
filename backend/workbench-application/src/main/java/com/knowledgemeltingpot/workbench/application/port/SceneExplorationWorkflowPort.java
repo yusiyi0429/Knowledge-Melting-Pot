@@ -13,7 +13,7 @@ public interface SceneExplorationWorkflowPort {
         public ExplorationRequest { sources = List.copyOf(sources); }
     }
 
-    record ExplorationSource(UUID materialId, String fileName, List<ExplorationChunk> chunks) {
+    record ExplorationSource(UUID materialId, String sourceCode, String fileName, List<ExplorationChunk> chunks) {
         public ExplorationSource { chunks = List.copyOf(chunks); }
     }
 
@@ -28,10 +28,10 @@ public interface SceneExplorationWorkflowPort {
     record CandidateDraft(int rank, String sceneName, String sceneDescription,
             String subSceneName, String subSceneDescription, String rationale,
             ExplorationCandidate.ValueLevel valueLevel, int estimatedRuleCount,
-            int estimatedFlowCount, List<String> tags, List<UUID> materialIds) {
+            int estimatedFlowCount, List<String> tags, List<String> sourceCodes) {
         public CandidateDraft {
             tags = tags == null ? List.of() : List.copyOf(tags);
-            materialIds = materialIds == null ? List.of() : List.copyOf(materialIds);
+            sourceCodes = sourceCodes == null ? List.of() : List.copyOf(sourceCodes);
         }
     }
 }

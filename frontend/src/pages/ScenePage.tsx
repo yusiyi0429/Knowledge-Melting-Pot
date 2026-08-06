@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LineageRail, type LineageStage } from "../components/LineageRail";
 import { Button, EmptyState, Glyph, Status } from "../components/Ui";
+import { OperationReadinessNotice } from "../components/OperationReadinessNotice";
 import {
   ApiError,
   adoptAlignmentProposal,
@@ -15,10 +16,12 @@ import {
   getJob,
   getKnowledgeDocument,
   getLatestRelease,
+  getOperationReadiness,
   getReleaseManifest,
   getScene,
   listDocumentRevisions,
   listEvaluationRuns,
+  listJobAgentExecutions,
   listAlignmentProposals,
   listExtractionRounds,
   listSubSceneAssets,
@@ -37,6 +40,7 @@ import type {
   Asset,
   AlignmentAction,
   AlignmentProposal,
+  AgentExecutionAttempt,
   AgentModelCatalogEntry,
   AgentSkillCatalogEntry,
   AssetJobAccepted,
@@ -54,6 +58,8 @@ import type {
   KnowledgeDocument,
   MaterialJobAccepted,
   MaterialListItem,
+  OperationReadiness,
+  ReadinessOperation,
   Release,
   ReleaseValidation,
   SaveDocumentDraft,
@@ -291,6 +297,7 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [assetsError, setAssetsError] = useState<string | null>(null);
   const [assetJob, setAssetJob] = useState<AssetJobAccepted | null>(null);
   const [jobStatus, setJobStatus] = useState<Job | null>(null);
+  const [assetAgentExecutions, setAssetAgentExecutions] = useState<AgentExecutionAttempt[]>([]);
   const [generatingTypes, setGeneratingTypes] = useState<AssetType[] | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
 
@@ -311,6 +318,7 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [evaluationJobStatus, setEvaluationJobStatus] = useState<Job | null>(null);
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [evaluating, setEvaluating] = useState(false);
+  const [operationReadiness, setOperationReadiness] = useState<Partial<Record<ReadinessOperation, OperationReadiness>>>({});
   const jobTimer = useRef<number | null>(null);
   const workflowTimer = useRef<number | null>(null);
   const evaluationTimer = useRef<number | null>(null);
@@ -403,6 +411,30 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   );
 
   const currentRoundId = latestRound?.id ?? null;
+
+  useEffect(() => {
+    if (!selectedSubsceneId || !currentRoundId) {
+      setOperationReadiness({});
+      return;
+    }
+    const operations: ReadinessOperation[] = step === 2
+      ? ["EXTRACT", "ALIGN"]
+      : step === 3 ? ["GENERATE_ASSETS", "RELEASE", "EVALUATE"] : [];
+    if (operations.length === 0) return;
+    let active = true;
+    const context = { sceneId, subSceneId: selectedSubsceneId, roundId: currentRoundId };
+    void Promise.all(operations.map(async (operation) => [operation,
+      await getOperationReadiness(operation, context)] as const))
+      .then((values) => {
+        if (!active) return;
+        setOperationReadiness((current) => ({ ...current, ...Object.fromEntries(values) }));
+      })
+      .catch(() => { /* Existing command validation remains the safe fallback while the API is unavailable. */ });
+    return () => { active = false; };
+  }, [step, sceneId, selectedSubsceneId, currentRoundId,
+    materials?.map((item) => `${item.id}:${item.status}:${item.binding.active}`).join("|") ?? "",
+    doc?.revisionId, doc?.finalized,
+    assets?.map((item) => `${item.type}:${item.status}:${item.documentRevisionId ?? ""}`).join("|") ?? ""]);
 
   useEffect(() => {
     setSemanticResults(null);
@@ -790,6 +822,11 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
             jobTimer.current = null;
           }
           setGeneratingTypes(null);
+          try {
+            setAssetAgentExecutions(await listJobAgentExecutions(jobId));
+          } catch {
+            setAssetAgentExecutions([]);
+          }
           // Never let a stale job refresh the currently viewed sub-scene's assets.
           if (pollingSubScene === selectedSubsceneRef.current) {
             await loadAssets();
@@ -814,6 +851,7 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
     setGeneratingTypes(types);
     setAssetJob(null);
     setJobStatus(null);
+    setAssetAgentExecutions([]);
     setAssetsError(null);
     try {
       const accepted = await generateAssets(selectedSubsceneId, doc.revisionId, types, crypto.randomUUID());
@@ -1291,6 +1329,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                     {modelConfigs.length} 个模型 · {skillVersions.length} 个 Skill
                   </Status>
                 </div>
+                <OperationReadinessNotice report={operationReadiness.EXTRACT ?? null}
+                  label="知识萃取" onNavigate={onNavigate}/>
                 <div className="workflow-runner__config">
                   <label className="field workflow-config-field">
                     <span><b>模型配置版本</b><small>用于本轮 Map/Reduce 推理</small></span>
@@ -1318,7 +1358,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                   </label>
                   <div className="workflow-runner__action">
                     <Button className="button--primary button--small" onClick={() => void runExtraction()}
-                      disabled={extracting || !currentRoundId || !selectedModelConfigId || !selectedSkillVersionId}>
+                      disabled={extracting || !currentRoundId || !selectedModelConfigId || !selectedSkillVersionId
+                        || operationReadiness.EXTRACT?.ready === false}>
                       {extracting ? "萃取中…" : "开始 Map/Reduce 萃取"}
                     </Button>
                     <small>{currentRoundId ? "任务将在 Worker 中异步执行" : "请先创建萃取轮次"}</small>
@@ -1473,6 +1514,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                           <div className="proposal-card proposal-card--composer">
                             <span>生成结构化 Proposal</span>
                             <p>只生成可审计的修改建议，不会直接覆盖当前 Revision。</p>
+                            <OperationReadinessNotice report={operationReadiness.ALIGN ?? null}
+                              label="AI 对齐" onNavigate={onNavigate}/>
                             <label className="field">
                               <span>对齐动作</span>
                               <select value={alignmentAction} onChange={(event) => setAlignmentAction(event.currentTarget.value as AlignmentAction)}>
@@ -1482,7 +1525,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                                 <option value="REWRITE">结构改写</option>
                               </select>
                             </label>
-                            <Button className="button--quiet button--small" disabled={!doc || isDirty || aligning}
+                            <Button className="button--quiet button--small" disabled={!doc || isDirty || aligning
+                              || operationReadiness.ALIGN?.ready === false}
                               onClick={() => void runAlignment()}>{aligning ? "生成中…" : "生成 Proposal"}</Button>
                             {alignmentJob ? <small>{alignmentStatus ? `${alignmentStatus.stage ?? alignmentStatus.status} · ${alignmentStatus.percent}%` : "已排队"}</small> : null}
                             {proposalError ? <div className="form-error" role="alert">{proposalError}</div> : null}
@@ -1562,10 +1606,13 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                       </span>
                     </div>
                   ) : null}
+                  <OperationReadinessNotice report={operationReadiness.GENERATE_ASSETS ?? null}
+                    label="五类资产生成" onNavigate={onNavigate}/>
                   <div className="asset-toolbar">
                     <span>基于定稿 Revision {doc ? `v${doc.revisionNumber}` : "—"} 确定性生成；生成过程会真实追踪 Job。</span>
                     <Button className="button--primary button--small"
-                      disabled={!canGenerate || generatingTypes !== null}
+                      disabled={!canGenerate || generatingTypes !== null
+                        || operationReadiness.GENERATE_ASSETS?.ready === false}
                       onClick={() => void startGeneration(["RULE_CATALOG", "DECISION_FLOW", "SKILL_PACKAGE", "QA_PAIRS", "EVALUATION_SET"])}>
                       {generatingTypes !== null ? "生成中…" : "生成全部"}
                     </Button>
@@ -1581,6 +1628,19 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                       </div>
                       <progress className="job-strip__progress" max={100} value={jobStatus?.percent ?? 0} aria-label="任务进度" />
                       <strong>{jobStatus?.percent ?? 0}%</strong>
+                    </div>
+                  ) : null}
+                  {assetAgentExecutions.length > 0 ? (
+                    <div className="agent-execution-summary" aria-label="智能体执行记录">
+                      <b>智能体执行</b>
+                      {assetAgentExecutions.map((attempt) => (
+                        <span key={attempt.id}
+                          className={`agent-execution-summary__item agent-execution-summary__item--${attempt.status.toLowerCase()}`}>
+                          {ASSET_TYPE_LABELS[attempt.assetType]} · {attempt.role} · {attempt.status}
+                          {attempt.failureCode ? ` · ${attempt.failureCode}` : ""}
+                          <code>{attempt.effectiveConfigHash.slice(0, 10)}</code>
+                        </span>
+                      ))}
                     </div>
                   ) : null}
                   <div className="asset-grid">
@@ -1617,7 +1677,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                             {asset.status === "READY" ? (
                               <a href={`/api/v1/assets/${asset.id}/download`} target="_blank" rel="noopener noreferrer">下载 Bundle</a>
                             ) : (asset.status === "FAILED" || asset.status === "BLOCKED") ? (
-                              <button disabled={!canGenerate || generatingTypes !== null}
+                              <button disabled={!canGenerate || generatingTypes !== null
+                                || operationReadiness.GENERATE_ASSETS?.ready === false}
                                 onClick={() => void startGeneration([asset.type])}>
                                 {generating ? "生成中…" : "重试"}
                               </button>
@@ -1647,6 +1708,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                       </div>
                     ) : (
                       <div className="release-form">
+                        <OperationReadinessNotice report={operationReadiness.RELEASE ?? null}
+                          label="当前子场景发布" onNavigate={onNavigate}/>
                         <div className="release-baseline" role="note">
                           <Glyph name="history" size={14} /> 当前发布基线：{latestRelease ? `${latestRelease.tag}（${latestRelease.manifestSha256.slice(0, 12)}…）` : "尚无发布（首次发布）"}
                         </div>
@@ -1672,7 +1735,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                         </div>
                         {releaseError ? <div className="form-error" role="alert">{releaseError}</div> : null}
                         <div className="release-form__actions">
-                          <Button className="button--quiet button--small" onClick={() => void runPreflight()}>发布预检</Button>
+                          <Button className="button--quiet button--small" onClick={() => void runPreflight()}
+                            disabled={operationReadiness.RELEASE?.ready === false}>发布预检</Button>
                           {validation ? (
                             <Button className="button--primary button--small" disabled={!validation.ready || publishing || draftStale}
                               onClick={() => void publishRelease()}>{publishing ? "发布中…" : draftStale ? "内容已变更，请重新预检" : "确认发布"}</Button>
@@ -1720,11 +1784,15 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                         </div>
                       </div>
                       <Button className="button--primary button--small"
-                        disabled={!canEvaluate || !latestRelease || !currentRoundId || readyHoldoutCount === 0 || evaluating}
+                        disabled={!canEvaluate || !latestRelease || !currentRoundId || readyHoldoutCount === 0 || evaluating
+                          || operationReadiness.EVALUATE?.ready === false}
                         onClick={() => void runEvaluation()}>
                         {evaluating ? "评测中…" : activeEvaluation ? "重新评测" : "运行评测"}
                       </Button>
                     </header>
+
+                    <OperationReadinessNotice report={operationReadiness.EVALUATE ?? null}
+                      label="留出集评测" onNavigate={onNavigate}/>
 
                     {!latestRelease || readyHoldoutCount === 0 ? (
                       <div className="evaluation-prerequisite" role="note">

@@ -264,13 +264,24 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
         description="管理从业务素材、规则萃取到资产发布的完整链路。每一步都保留版本、来源和操作记录。"
         actions={<>
           <Button className="button--quiet" onClick={() => onNavigate("/explore")}>
-            <Glyph name="search" />场景探索
+            <Glyph name="search" />从素材发现场景
           </Button>
           <Button className="button--primary" onClick={openDialog}>
-            <Glyph name="plus" />新建萃取场景
+            <Glyph name="plus" />直接创建场景
           </Button>
         </>}
       />
+
+      <section className="scene-entry-choice" aria-label="场景启动方式">
+        <button type="button" onClick={() => onNavigate("/explore")}>
+          <span>STEP 0 · 可选</span><div><Glyph name="search" size={18}/><b>从素材发现场景</b></div>
+          <small>尚未确定业务边界时，先上传素材，由场景探索智能体生成候选。</small>
+        </button>
+        <button type="button" onClick={openDialog}>
+          <span>直接进入 STEP 1</span><div><Glyph name="plus" size={18}/><b>直接创建场景</b></div>
+          <small>目标已经明确时，创建 Scene / SubScene / Round 后进入素材固定。</small>
+        </button>
+      </section>
 
       <section className="dashboard-ledger" aria-label="知识萃取流程">
         <div className="dashboard-ledger__summary">
@@ -298,7 +309,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
         <div className="model-loading" aria-busy="true">正在加载场景列表…</div>
       ) : null}
       {scenes !== null && scenes.length === 0 ? (
-        <EmptyState title="还没有场景" detail="点击右上角“新建萃取场景”创建第一个场景。" />
+        <EmptyState title="还没有场景" detail="可以先从素材发现候选，也可以直接创建已知场景。" />
       ) : null}
       {scenes !== null && scenes.length > 0 ? (
         <section className="section-block">
@@ -344,7 +355,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
                 </article>
               ))}
               <button className="new-scene-card" onClick={openDialog}>
-                <span><Glyph name="plus" size={22} /></span><b>新建萃取场景</b><small>从目标和素材开始</small>
+                <span><Glyph name="plus" size={22} /></span><b>直接创建场景</b><small>从已知业务目标开始</small>
               </button>
             </div>
           )}

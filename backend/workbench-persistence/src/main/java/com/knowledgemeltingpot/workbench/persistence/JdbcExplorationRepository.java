@@ -65,8 +65,21 @@ public class JdbcExplorationRepository implements ExplorationRepository {
 
     @Override
     public List<ExplorationSession> findRecent(int limit) {
-        return jdbc.sql(SESSION_COLUMNS + " ORDER BY updated_at DESC, id LIMIT :limit")
+        return jdbc.sql(SESSION_COLUMNS + " WHERE deleted_at IS NULL ORDER BY updated_at DESC, id LIMIT :limit")
                 .param("limit", limit).query(JdbcExplorationRepository::mapSession).list();
+    }
+
+    @Override
+    public boolean archive(UUID sessionId, int expectedVersion, UUID actorId, Instant archivedAt) {
+        return jdbc.sql("""
+                UPDATE exploration_session
+                SET deleted_at = :archivedAt, deleted_by = :actorId,
+                    version = version + 1, updated_at = :archivedAt
+                WHERE id = :id AND version = :expectedVersion AND deleted_at IS NULL
+                  AND status <> 'ANALYZING'
+                """)
+                .param("id", sessionId).param("expectedVersion", expectedVersion).param("actorId", actorId)
+                .param("archivedAt", JdbcTimes.toJdbc(archivedAt)).update() == 1;
     }
 
     @Override
@@ -77,7 +90,7 @@ public class JdbcExplorationRepository implements ExplorationRepository {
                        COALESCE((SELECT MAX(ordinal) + 1 FROM exploration_material WHERE session_id = :sessionId), 0),
                        :createdAt
                 FROM exploration_session
-                WHERE id = :sessionId AND status = 'DRAFT'
+                WHERE id = :sessionId AND status = 'DRAFT' AND deleted_at IS NULL
                 ON CONFLICT (session_id, material_id) DO NOTHING
                 """)
                 .param("sessionId", sessionId).param("materialId", materialId)
@@ -115,7 +128,10 @@ public class JdbcExplorationRepository implements ExplorationRepository {
     @Override
     @Transactional
     public boolean completeAnalysis(UUID sessionId, List<ExplorationCandidate> candidates, Instant updatedAt) {
-        String status = jdbc.sql("SELECT status FROM exploration_session WHERE id = :sessionId FOR UPDATE")
+        String status = jdbc.sql("""
+                SELECT status FROM exploration_session
+                WHERE id = :sessionId AND deleted_at IS NULL FOR UPDATE
+                """)
                 .param("sessionId", sessionId).query(String.class).optional().orElse("");
         if (!"ANALYZING".equals(status)) return false;
         Integer current = jdbc.sql("""
@@ -180,7 +196,7 @@ public class JdbcExplorationRepository implements ExplorationRepository {
     public boolean transition(UUID sessionId, ExplorationStatus expected, ExplorationStatus target, Instant updatedAt) {
         return jdbc.sql("""
                 UPDATE exploration_session SET status = :target, version = version + 1, updated_at = :updatedAt
-                WHERE id = :id AND status = :expected
+                WHERE id = :id AND status = :expected AND deleted_at IS NULL
                 """).param("id", sessionId).param("expected", expected.name()).param("target", target.name())
                 .param("updatedAt", JdbcTimes.toJdbc(updatedAt)).update() == 1;
     }
@@ -192,6 +208,7 @@ public class JdbcExplorationRepository implements ExplorationRepository {
         int updated = jdbc.sql("""
                 UPDATE exploration_session SET status = 'ACCEPTED', version = version + 1, updated_at = :acceptedAt
                 WHERE id = :sessionId AND status = 'READY' AND version = :expectedVersion
+                  AND deleted_at IS NULL
                 """).param("sessionId", sessionId).param("expectedVersion", expectedVersion)
                 .param("acceptedAt", JdbcTimes.toJdbc(acceptedAt)).update();
         if (updated != 1) return false;
@@ -218,7 +235,7 @@ public class JdbcExplorationRepository implements ExplorationRepository {
     }
 
     private Optional<ExplorationSession> querySession(UUID id, boolean lock) {
-        return jdbc.sql(SESSION_COLUMNS + " WHERE id = :id" + (lock ? " FOR UPDATE" : ""))
+        return jdbc.sql(SESSION_COLUMNS + " WHERE id = :id AND deleted_at IS NULL" + (lock ? " FOR UPDATE" : ""))
                 .param("id", id).query(JdbcExplorationRepository::mapSession).optional();
     }
 
