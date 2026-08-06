@@ -26,7 +26,7 @@ workbench:
   agent:
     enabled: ${KMP_AGENT_ENABLED:false}
     test-stub-enabled: ${KMP_AGENT_TEST_STUB_ENABLED:false}
-    timeout: ${KMP_AGENT_TIMEOUT:PT1M}
+    timeout: ${KMP_AGENT_TIMEOUT:PT3M}
   skill-sandbox:
     enabled: ${KMP_SKILL_SANDBOX_ENABLED:false}
     url: ${KMP_SKILL_SANDBOX_URL:http://skill-sandbox:8081/v1/execute}

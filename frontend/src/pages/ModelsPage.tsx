@@ -4,13 +4,17 @@ import {
   ApiError,
   createEmbeddingProfile,
   createModelConfigVersion,
-  createModelConnection,
+  createModelEndpointRule,
   deleteModelConnection,
+  deleteModelEndpointRule,
   listEmbeddingProfiles,
   listModelConfigVersions,
   listModelConnections,
+  listModelEndpointRules,
+  setupModelConnection,
   testModelConnection,
   updateModelConnection,
+  updateModelEndpointRule,
 } from "../lib/api";
 import type {
   EmbeddingProfile,
@@ -19,12 +23,16 @@ import type {
   ModelConfigVersionDraft,
   ModelConnection,
   ModelConnectionDraft,
+  ModelConnectionSetupDraft,
   ModelConnectionTestResult,
+  ModelEndpointRule,
+  ModelEndpointRuleDraft,
   ModelProvider,
 } from "../lib/api";
 import { connectionTestSummary, connectionValidationLabel, modelProviderLabel, toStatusTone } from "../domain";
 
 type ConnectionDialogState = { mode: "create" } | { mode: "edit"; connection: ModelConnection };
+type EndpointRuleDialogState = { mode: "create" } | { mode: "edit"; rule: ModelEndpointRule };
 
 function formatDateTime(iso: string): string {
   const date = new Date(iso);
@@ -53,6 +61,87 @@ function TestResultNote({ result }: { result: ModelConnectionTestResult }) {
       </div>
       <code>{result.messageCode}</code>
     </div>
+  );
+}
+
+function EndpointRuleDialog({
+  dialog,
+  saving,
+  error,
+  onClose,
+  onSubmit,
+}: {
+  dialog: EndpointRuleDialogState;
+  saving: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const editing = dialog.mode === "edit" ? dialog.rule : null;
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    if (!node.open) node.showModal();
+    return () => { if (node.open) node.close(); };
+  }, []);
+
+  return (
+    <dialog ref={ref} className="model-dialog" aria-labelledby="endpoint-rule-dialog-title" onCancel={onClose}>
+      <form className="model-dialog__form" onSubmit={onSubmit} noValidate>
+        <header className="model-dialog__head">
+          <div>
+            <h2 id="endpoint-rule-dialog-title">{editing ? "编辑可信模型主机" : "新增可信模型主机"}</h2>
+            <p>规则保存后立即生效，API 和 Worker 每次请求及重定向都会重新校验。</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭" onClick={onClose} disabled={saving}>
+            <Glyph name="close" size={16} />
+          </button>
+        </header>
+        <div className="model-dialog__body">
+          <label className="field">
+            <span>主机名或 IPv4 地址</span>
+            <input name="host" autoFocus autoComplete="off" maxLength={253} defaultValue={editing?.host}
+              placeholder="例如 llm-gateway.bank.local" />
+            <small>只填写精确主机，不包含协议、路径、通配符或端口。</small>
+          </label>
+          <label className="field">
+            <span>允许端口</span>
+            <input name="allowedPorts" autoComplete="off" defaultValue={editing?.allowedPorts.join(", ") ?? "443"}
+              placeholder="例如 443, 8000" />
+            <small>多个端口使用逗号分隔，最多 32 个。</small>
+          </label>
+          <div className="field field--row">
+            <span>允许解析到内网地址</span>
+            <label className="switch">
+              <input type="checkbox" name="allowPrivateAddresses" aria-label="允许解析到内网地址"
+                defaultChecked={editing?.allowPrivateAddresses ?? true} />
+              <span />
+            </label>
+          </div>
+          <div className="field field--row">
+            <span>允许使用 HTTP</span>
+            <label className="switch">
+              <input type="checkbox" name="allowHttp" aria-label="允许使用 HTTP"
+                defaultChecked={editing?.allowHttp ?? false} />
+              <span />
+            </label>
+          </div>
+          <div className="policy-safety-note">
+            <Glyph name="lock" size={14} />
+            <span>回环、链路本地、组播和保留地址始终禁止，不受本规则开关影响。</span>
+          </div>
+          {error ? <div className="form-error" role="alert">{error}</div> : null}
+        </div>
+        <footer className="model-dialog__foot">
+          <Button type="button" className="button--quiet" onClick={onClose} disabled={saving}>取消</Button>
+          <Button type="submit" className="button--primary" disabled={saving}>
+            {saving ? "保存中…" : "保存并立即生效"}
+          </Button>
+        </footer>
+      </form>
+    </dialog>
   );
 }
 
@@ -89,7 +178,7 @@ function ConnectionDialog({
         <header className="model-dialog__head">
           <div>
             <h2 id="model-dialog-title">{editing ? "编辑模型连接" : "新增模型连接"}</h2>
-            <p>{editing ? "凭据为只写字段，本页永远不会回显已保存的密钥。" : "凭据只发送到同源 API，不写入浏览器存储。"}</p>
+            <p>{editing ? "凭据为只写字段，本页永远不会回显已保存的密钥。" : "填写连接地址、API Key 和 Model ID，保存后立即执行连通测试。"}</p>
           </div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={onClose} disabled={saving}>
             <Glyph name="close" size={16} />
@@ -114,10 +203,21 @@ function ConnectionDialog({
           <label className="field">
             <span>Base URL</span>
             <input name="baseUrl" autoComplete="off" defaultValue={editing?.baseUrl} maxLength={2048}
-              placeholder="https://…" aria-invalid={Boolean(formFieldErrors.baseUrl)} />
-            <small>必须以 https:// 开头，且命中管理员维护的主机白名单。</small>
+              placeholder="http://llm-gateway.bank.local:8000/v1" aria-invalid={Boolean(formFieldErrors.baseUrl)} />
+            <small>系统会自动登记该地址的精确主机和端口。</small>
             {formFieldErrors.baseUrl ? <small className="field-error">{formFieldErrors.baseUrl}</small> : null}
           </label>
+          {!editing ? (
+            <label className="field">
+              <span>Model ID</span>
+              <input name="modelId" autoComplete="off" maxLength={300}
+                aria-label="Model ID"
+                placeholder="例如 MiniMax-M2.5、qwen-max 或本地模型名称"
+                aria-invalid={Boolean(formFieldErrors.modelId)} />
+              <small>按模型服务实际提供的 ID 填写，不限制供应商的模型列表。</small>
+              {formFieldErrors.modelId ? <small className="field-error">{formFieldErrors.modelId}</small> : null}
+            </label>
+          ) : null}
           <label className="field">
             <span>凭据（只写）</span>
             <input name="credential" type="password" autoComplete="new-password"
@@ -134,6 +234,16 @@ function ConnectionDialog({
               <input type="checkbox" name="clearCredential" />
             </label>
           ) : null}
+          {!editing ? (
+            <div className="field field--row">
+              <span>允许访问内网地址</span>
+              <label className="switch">
+                <input type="checkbox" name="allowPrivateAddresses" aria-label="允许访问内网地址" />
+                <span />
+              </label>
+              <small>仅本地部署模型或银行内网网关需要开启；系统会按 Base URL 自动登记精确主机和端口。</small>
+            </div>
+          ) : null}
           <div className="field field--row">
             <span>启用该连接</span>
             <label className="switch">
@@ -146,7 +256,7 @@ function ConnectionDialog({
         <footer className="model-dialog__foot">
           <Button type="button" className="button--quiet" onClick={onClose} disabled={saving}>取消</Button>
           <Button type="submit" className="button--primary" disabled={saving}>
-            {saving ? "保存中…" : editing ? "保存修改" : "创建连接"}
+            {saving ? (editing ? "保存中…" : "保存并测试中…") : editing ? "保存修改" : "保存并测试"}
           </Button>
         </footer>
       </form>
@@ -155,9 +265,17 @@ function ConnectionDialog({
 }
 
 export function ModelsPage() {
+  const [endpointRules, setEndpointRules] = useState<ModelEndpointRule[] | null>(null);
+  const [endpointRuleError, setEndpointRuleError] = useState<string | null>(null);
+  const [endpointRuleDialog, setEndpointRuleDialog] = useState<EndpointRuleDialogState | null>(null);
+  const [endpointRuleSaving, setEndpointRuleSaving] = useState(false);
+  const [endpointRuleFormError, setEndpointRuleFormError] = useState<string | null>(null);
+  const [endpointRuleDeleteConfirmId, setEndpointRuleDeleteConfirmId] = useState<string | null>(null);
+  const [endpointRuleDeletingId, setEndpointRuleDeletingId] = useState<string | null>(null);
   const [connections, setConnections] = useState<ModelConnection[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
+  const [warningNotice, setWarningNotice] = useState<string | null>(null);
 
   const [dialog, setDialog] = useState<ConnectionDialogState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -180,6 +298,20 @@ export function ModelsPage() {
   const [embeddingProfiles, setEmbeddingProfiles] = useState<EmbeddingProfile[] | null>(null);
   const [embeddingError, setEmbeddingError] = useState<string | null>(null);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
+
+  const loadEndpointRules = useCallback(async () => {
+    setEndpointRuleError(null);
+    try {
+      setEndpointRules(await listModelEndpointRules());
+    } catch (reason) {
+      setEndpointRules(null);
+      setEndpointRuleError(reason instanceof ApiError ? reason.message : "无法读取模型访问策略。");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadEndpointRules();
+  }, [loadEndpointRules]);
 
   const loadConnections = useCallback(async () => {
     setLoadError(null);
@@ -226,18 +358,24 @@ export function ModelsPage() {
     if (saving || !dialog) return;
     setFormError(null);
     setFormFieldErrors({});
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const name = String(form.get("name") ?? "").trim();
     const provider = String(form.get("provider") ?? "") as ModelProvider;
     const baseUrl = String(form.get("baseUrl") ?? "").trim();
     const credential = String(form.get("credential") ?? "");
+    const modelId = String(form.get("modelId") ?? "").trim();
     const enabled = form.get("enabled") === "on";
     if (!name) {
       setFormError("请输入连接名称。");
       return;
     }
-    if (!/^https:\/\/.+/.test(baseUrl)) {
-      setFormError("Base URL 必须是以 https:// 开头的完整地址。");
+    if (!/^https?:\/\/.+/.test(baseUrl)) {
+      setFormError("Base URL 必须是以 http:// 或 https:// 开头的完整地址。");
+      return;
+    }
+    if (dialog.mode === "create" && !modelId) {
+      setFormError("请输入 Model ID。");
       return;
     }
     const clearCredential = dialog.mode === "edit" && form.get("clearCredential") === "on";
@@ -251,12 +389,28 @@ export function ModelsPage() {
       if (!clearCredential && credential.trim()) draft.credential = credential;
       if (dialog.mode === "edit") {
         await updateModelConnection(dialog.connection.id, { ...draft, clearCredential });
+        closeDialog();
+        setSuccessNotice("连接已更新，列表已刷新。");
+        setWarningNotice(null);
+        await loadConnections();
       } else {
-        await createModelConnection(draft);
+        const setupDraft: ModelConnectionSetupDraft = {
+          ...draft,
+          modelId,
+          allowPrivateAddresses: form.get("allowPrivateAddresses") === "on",
+        };
+        const result = await setupModelConnection(setupDraft);
+        setTestResults((results) => ({ ...results, [result.connection.id]: result.connectionTest }));
+        closeDialog();
+        await Promise.all([loadEndpointRules(), loadConnections()]);
+        if (result.connectionTest.connectivityVerified) {
+          setSuccessNotice(`${result.connection.name} 已保存，模型 ${result.configVersion.modelId} 连通测试通过。`);
+          setWarningNotice(null);
+        } else {
+          setSuccessNotice(null);
+          setWarningNotice(`${result.connection.name} 和模型配置已保存，但连通测试未通过；请检查地址、API Key 后重新测试。`);
+        }
       }
-      closeDialog();
-      setSuccessNotice(dialog.mode === "edit" ? "连接已更新，列表已刷新。" : "连接已创建，列表已刷新。");
-      await loadConnections();
     } catch (reason) {
       if (reason instanceof ApiError) {
         setFormError(reason.message);
@@ -265,7 +419,70 @@ export function ModelsPage() {
         setFormError("保存失败，请稍后重试。");
       }
     } finally {
+      const credentialInput = formElement.elements.namedItem("credential");
+      if (credentialInput instanceof HTMLInputElement) credentialInput.value = "";
       setSaving(false);
+    }
+  };
+
+  const openEndpointRuleDialog = (state: EndpointRuleDialogState) => {
+    setEndpointRuleFormError(null);
+    setEndpointRuleDialog(state);
+  };
+
+  const submitEndpointRule = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (endpointRuleSaving || !endpointRuleDialog) return;
+    setEndpointRuleFormError(null);
+    const form = new FormData(event.currentTarget);
+    const host = String(form.get("host") ?? "").trim();
+    const rawPortValues = String(form.get("allowedPorts") ?? "").split(",").map((value) => value.trim());
+    const ports = [...new Set(rawPortValues.map(Number))];
+    if (!host || host.includes("://") || /[*/:]/.test(host)) {
+      setEndpointRuleFormError("请填写不含协议、路径、通配符或端口的精确主机名或 IPv4 地址。");
+      return;
+    }
+    if (rawPortValues.some((value) => value === "") || ports.length === 0 || ports.length > 32
+      || ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65_535)) {
+      setEndpointRuleFormError("请填写 1 到 65535 之间的端口，多个端口使用逗号分隔，最多 32 个。");
+      return;
+    }
+    const draft: ModelEndpointRuleDraft = {
+      host,
+      allowedPorts: ports,
+      allowHttp: form.get("allowHttp") === "on",
+      allowPrivateAddresses: form.get("allowPrivateAddresses") === "on",
+    };
+    setEndpointRuleSaving(true);
+    try {
+      if (endpointRuleDialog.mode === "edit") {
+        await updateModelEndpointRule(endpointRuleDialog.rule.id, draft);
+      } else {
+        await createModelEndpointRule(draft);
+      }
+      setEndpointRuleDialog(null);
+      setSuccessNotice("模型访问策略已保存并立即生效，无需重启服务。");
+      await loadEndpointRules();
+    } catch (reason) {
+      setEndpointRuleFormError(reason instanceof ApiError ? reason.message : "保存模型访问策略失败。");
+    } finally {
+      setEndpointRuleSaving(false);
+    }
+  };
+
+  const deleteEndpointRule = async (rule: ModelEndpointRule) => {
+    if (endpointRuleDeletingId !== null) return;
+    setEndpointRuleDeletingId(rule.id);
+    setEndpointRuleError(null);
+    try {
+      await deleteModelEndpointRule(rule.id);
+      setEndpointRuleDeleteConfirmId(null);
+      setSuccessNotice(`可信模型主机 ${rule.host} 已删除。`);
+      await loadEndpointRules();
+    } catch (reason) {
+      setEndpointRuleError(reason instanceof ApiError ? reason.message : "删除可信模型主机失败。");
+    } finally {
+      setEndpointRuleDeletingId(null);
     }
   };
 
@@ -408,8 +625,8 @@ export function ModelsPage() {
     <div className="page">
       <PageHeader
         eyebrow="平台 / 模型接入"
-        title="模型连接与生成参数分开版本化"
-        description="密钥只写不读；测试连接会向白名单内 Provider 发起只读鉴权探测，并重新校验 DNS 与重定向目标。"
+        title="模型连接"
+        description="填写 Provider、Base URL、API Key 和 Model ID；密钥只写不读，保存后自动测试连接。"
         actions={
           <Button className="button--primary" onClick={() => openDialog({ mode: "create" })}>
             <Glyph name="plus" />新增模型连接
@@ -423,6 +640,78 @@ export function ModelsPage() {
           <button aria-label="关闭提示" onClick={() => setSuccessNotice(null)}><Glyph name="close" size={14} /></button>
         </div>
       ) : null}
+      {warningNotice ? (
+        <div className="page-notice page-notice--warning" role="status">
+          <Glyph name="warning" size={14} />
+          <span>{warningNotice}</span>
+          <button aria-label="关闭提示" onClick={() => setWarningNotice(null)}><Glyph name="close" size={14} /></button>
+        </div>
+      ) : null}
+      <details className="settings-disclosure">
+        <summary>
+          <span className="settings-disclosure__mark"><Glyph name="lock" size={16} /></span>
+          <span className="settings-disclosure__copy">
+            <b>网络访问策略</b>
+            <small>{endpointRules === null ? "正在读取可信主机…" : `已配置 ${endpointRules.length} 条页面规则；本地和银行内网模型按需调整`}</small>
+          </span>
+          <Status tone="neutral">高级设置</Status>
+          <Glyph name="chevron" size={16} />
+        </summary>
+        <div className="settings-disclosure__body">
+      <section className="model-policy" aria-labelledby="model-policy-title">
+        <header className="model-policy__head">
+          <div className="model-policy__mark"><Glyph name="lock" size={18} /></div>
+          <div>
+            <span>INTRANET MODEL ACCESS</span>
+            <h2 id="model-policy-title">模型访问策略</h2>
+            <p>管理员在页面维护可信主机、端口和内网访问范围；保存后 API 与 Worker 立即生效。</p>
+          </div>
+          <Button className="button--quiet button--small" onClick={() => openEndpointRuleDialog({ mode: "create" })}>
+            <Glyph name="plus" size={14} />新增可信主机
+          </Button>
+        </header>
+        {endpointRuleError ? (
+          <div className="load-error" role="alert">
+            <Glyph name="warning" size={16} />
+            <div><b>无法处理模型访问策略</b><span>{endpointRuleError}</span></div>
+            <Button className="button--quiet button--small" onClick={() => void loadEndpointRules()}>重试</Button>
+          </div>
+        ) : null}
+        {endpointRules === null && !endpointRuleError ? <div className="model-loading" aria-busy="true">正在读取可信主机…</div> : null}
+        {endpointRules?.length === 0 ? (
+          <EmptyState title="还没有页面配置的可信主机" detail="新增银行内网模型网关或本地部署模型的精确主机和端口。启动默认主机仍保持可用。" />
+        ) : null}
+        {endpointRules && endpointRules.length > 0 ? (
+          <div className="model-policy__rules">
+            {endpointRules.map((rule) => (
+              <article key={rule.id}>
+                <div><b>{rule.host}</b><code>{rule.allowedPorts.join(", ")}</code></div>
+                <Status tone={rule.allowPrivateAddresses ? "info" : "neutral"}>
+                  {rule.allowPrivateAddresses ? "允许内网" : "仅公网地址"}
+                </Status>
+                <Status tone={rule.allowHttp ? "warning" : "success"}>
+                  {rule.allowHttp ? "HTTP / HTTPS" : "仅 HTTPS"}
+                </Status>
+                <time>{formatDateTime(rule.updatedAt)}</time>
+                <div className="row-actions">
+                  <button onClick={() => openEndpointRuleDialog({ mode: "edit", rule })}>编辑</button>
+                  {endpointRuleDeleteConfirmId === rule.id ? (
+                    <>
+                      <button className="row-action--danger" onClick={() => void deleteEndpointRule(rule)}
+                        disabled={endpointRuleDeletingId !== null}>
+                        {endpointRuleDeletingId === rule.id ? "删除中…" : "确认删除"}
+                      </button>
+                      <button onClick={() => setEndpointRuleDeleteConfirmId(null)}>取消</button>
+                    </>
+                  ) : <button className="row-action--danger" onClick={() => setEndpointRuleDeleteConfirmId(rule.id)}>删除</button>}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+      </section>
+        </div>
+      </details>
       {loadError ? (
         <div className="load-error" role="alert">
           <Glyph name="warning" size={16} />
@@ -533,6 +822,19 @@ export function ModelsPage() {
           })}
         </section>
       ) : null}
+      <details className="settings-disclosure settings-disclosure--embedding">
+        <summary>
+          <span className="settings-disclosure__mark"><Glyph name="search" size={16} /></span>
+          <span className="settings-disclosure__copy">
+            <b>Embedding 与中文稠密检索</b>
+            <small>仅在需要素材向量检索时配置；不会影响基础模型连接</small>
+          </span>
+          <Status tone={embeddingProfiles?.find((profile) => profile.active) ? "success" : "warning"}>
+            {embeddingProfiles?.find((profile) => profile.active) ? "已激活" : "未配置"}
+          </Status>
+          <Glyph name="chevron" size={16} />
+        </summary>
+        <div className="settings-disclosure__body">
       <section className="embedding-panel" aria-labelledby="embedding-title">
         <header className="embedding-panel__head">
           <div className="embedding-mark"><Glyph name="search" size={18} /></div>
@@ -581,8 +883,10 @@ export function ModelsPage() {
           </div>
         </div>
       </section>
+        </div>
+      </details>
       <div className="model-footnotes">
-        <div><b>SSRF 防护</b><p>Base URL 必须命中管理员白名单，并在 DNS 解析与重定向后再次校验。</p></div>
+        <div><b>内网访问边界</b><p>可信主机、端口、HTTP 和私网地址均由管理员在本页配置，变更立即生效。</p></div>
         <div><b>配置快照</b><p>发布 Manifest 记录 Provider、Model ID 和生成参数哈希，不记录 API Key。</p></div>
         <div><b>真实连通</b><p>连接测试会发起最小只读鉴权探测；只有通过的连接才能激活 Embedding 配置。</p></div>
       </div>
@@ -595,6 +899,11 @@ export function ModelsPage() {
           onClose={closeDialog}
           onSubmit={(event) => void submitConnection(event)}
         />
+      ) : null}
+      {endpointRuleDialog ? (
+        <EndpointRuleDialog dialog={endpointRuleDialog} saving={endpointRuleSaving}
+          error={endpointRuleFormError} onClose={() => setEndpointRuleDialog(null)}
+          onSubmit={(event) => void submitEndpointRule(event)} />
       ) : null}
     </div>
   );

@@ -11,12 +11,15 @@ import {
   createExtractionRound,
   createModelConfigVersion,
   createModelConnection,
+  createModelEndpointRule,
   createRelease,
   createScene,
   createSubScene,
   createUploadIntent,
   createUser,
+  deactivateMaterialBinding,
   deleteModelConnection,
+  deleteModelEndpointRule,
   generateAssets,
   getJob,
   getEvaluationRun,
@@ -30,6 +33,7 @@ import {
   listEvaluationRuns,
   listModelConfigVersions,
   listModelConnections,
+  listModelEndpointRules,
   listAuditEvents,
   listAlignmentProposals,
   createSkill,
@@ -45,12 +49,15 @@ import {
   listWorkbenchMaterials,
   login,
   resetUserPassword,
+  retryJob,
   saveKnowledgeDocument,
+  setupModelConnection,
   startAlignment,
   startExtraction,
   startReleaseEvaluation,
   testModelConnection,
   updateModelConnection,
+  updateModelEndpointRule,
   updateScene,
   updateUser,
   validateRelease,
@@ -148,6 +155,37 @@ describe("model connection API client", () => {
     updatedAt: "2026-08-03T08:00:00Z",
   };
 
+  it("manages administrator model endpoint rules without a service restart", async () => {
+    const rule = {
+      id: "4f06e31c-4d52-4a0e-bb0f-000000000099",
+      host: "llm.bank.local",
+      allowedPorts: [8000],
+      allowHttp: true,
+      allowPrivateAddresses: true,
+      createdAt: "2026-08-05T00:00:00Z",
+      updatedAt: "2026-08-05T00:00:00Z",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json([rule]))
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json(rule, { status: 201 }))
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json({ ...rule, allowedPorts: [8000, 8001] }))
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await listModelEndpointRules()).toHaveLength(1);
+    await createModelEndpointRule({ host: rule.host, allowedPorts: [8000], allowHttp: true, allowPrivateAddresses: true });
+    await updateModelEndpointRule(rule.id, { host: rule.host, allowedPorts: [8000, 8001], allowHttp: true, allowPrivateAddresses: true });
+    await deleteModelEndpointRule(rule.id);
+
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/v1/model-endpoint-rules");
+    expect(fetchMock.mock.calls[4]?.[0]).toBe(`/api/v1/model-endpoint-rules/${rule.id}`);
+    expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({ method: "PUT" });
+    expect(fetchMock.mock.calls[6]?.[1]).toMatchObject({ method: "DELETE" });
+  });
+
   it("lists connections and never receives a credential field", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(Response.json([connection]));
     vi.stubGlobal("fetch", fetchMock);
@@ -181,6 +219,48 @@ describe("model connection API client", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
       name: "企业网关", provider: "OPENAI_COMPATIBLE",
       baseUrl: "https://api.example.com/v1", credential: "test-credential-not-a-real-key", enabled: true,
+    });
+  });
+
+  it("configures any model from the generic setup command without persisting the key", async () => {
+    const setupResult = {
+      connection: { ...connection, provider: "OPENAI_COMPATIBLE", baseUrl: "https://api.minimaxi.com/v1" },
+      configVersion: {
+        id: "version-id", modelConnectionId: connection.id, version: 1,
+        modelId: "MiniMax-M2.5", temperature: 0.2, maxOutputTokens: 8192,
+        createdAt: "2026-08-05T00:00:00Z",
+      },
+      connectionTest: {
+        status: "CONNECTED", networkAttempted: true, connectivityVerified: true,
+        credentialConfigured: true, messageCode: "model.connection.verified",
+        testedAt: "2026-08-05T00:00:00Z",
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json(setupResult, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await setupModelConnection({
+      name: "MiniMax Token Plan（国内）",
+      provider: "OPENAI_COMPATIBLE",
+      baseUrl: "https://api.minimaxi.com/v1",
+      modelId: "MiniMax-M2.5",
+      credential: "token-plan-key-not-real",
+      enabled: true,
+      allowPrivateAddresses: false,
+    });
+
+    expect(result.connectionTest.connectivityVerified).toBe(true);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/model-connection-setups");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      name: "MiniMax Token Plan（国内）",
+      provider: "OPENAI_COMPATIBLE",
+      baseUrl: "https://api.minimaxi.com/v1",
+      modelId: "MiniMax-M2.5",
+      credential: "token-plan-key-not-real",
+      enabled: true,
+      allowPrivateAddresses: false,
     });
   });
 
@@ -793,6 +873,18 @@ describe("material upload API client", () => {
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
   });
 
+  it("deactivates one material binding via DELETE with CSRF", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deactivateMaterialBinding("mat-1", "binding-1");
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/materials/mat-1/bindings/binding-1");
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
+  });
+
   it("reads a job status without credential material", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({
       id: "job-1", type: "INGEST", status: "RUNNING", stage: "scan", percent: 40,
@@ -805,6 +897,29 @@ describe("material upload API client", () => {
     expect(job).toMatchObject({ status: "RUNNING", percent: 40 });
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/jobs/job-1",
       expect.objectContaining({ credentials: "same-origin" }));
+  });
+
+  it("retries a failed job with CSRF and an idempotency key", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(csrfBody))
+      .mockResolvedValueOnce(Response.json({
+        jobId: "job-1", status: "QUEUED",
+        statusUrl: "/api/v1/jobs/job-1", eventsUrl: "/api/v1/jobs/job-1/events",
+      }, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const accepted = await retryJob("job-1", "retry-key-1");
+
+    expect(accepted).toMatchObject({ jobId: "job-1", status: "QUEUED" });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/jobs/job-1/retry");
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "retry-key-1",
+        "X-XSRF-TOKEN": "csrf-token",
+      },
+    });
   });
 });
 

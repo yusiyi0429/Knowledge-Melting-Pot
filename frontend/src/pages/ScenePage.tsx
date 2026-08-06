@@ -7,11 +7,12 @@ import {
   createExtractionRound,
   createRelease,
   createSubScene,
+  deactivateMaterialBinding,
   generateAssets,
+  getAgentConfigurationCatalog,
   getCurrentUser,
   getEvaluationRun,
   getJob,
-  getSkill,
   getKnowledgeDocument,
   getLatestRelease,
   getReleaseManifest,
@@ -20,13 +21,11 @@ import {
   listEvaluationRuns,
   listAlignmentProposals,
   listExtractionRounds,
-  listModelConfigVersions,
-  listModelConnections,
-  listSkills,
   listSubSceneAssets,
   listSubScenes,
   listWorkbenchMaterials,
   retrieveKnowledgeChunks,
+  retryJob,
   saveKnowledgeDocument,
   startAlignment,
   startExtraction,
@@ -38,6 +37,8 @@ import type {
   Asset,
   AlignmentAction,
   AlignmentProposal,
+  AgentModelCatalogEntry,
+  AgentSkillCatalogEntry,
   AssetJobAccepted,
   AssetType,
   AuthenticatedUser,
@@ -53,13 +54,11 @@ import type {
   KnowledgeDocument,
   MaterialJobAccepted,
   MaterialListItem,
-  ModelConfigVersion,
   Release,
   ReleaseValidation,
   SaveDocumentDraft,
   Scene,
   SourceRefEntry,
-  SkillVersion,
   SubScene,
 } from "../lib/api";
 import { ASSET_STATUS_LABELS, ASSET_TYPE_DESCRIPTIONS, ASSET_TYPE_LABELS, MATERIAL_STATUS_LABELS, partitionLabels, toStatusTone } from "../domain";
@@ -108,8 +107,17 @@ const MATERIAL_EVENT_LABELS: Record<string, string> = {
   JOB_COMPLETED: "素材已就绪",
 };
 
+const MATERIAL_FAILURE_LABELS: Record<string, string> = {
+  MIME_MISMATCH: "文件类型校验失败：内容与扩展名不一致",
+  SHA256_MISMATCH: "文件完整性校验失败",
+  SIZE_MISMATCH: "文件大小与上传声明不一致",
+  MALWARE_DETECTED: "文件未通过恶意内容扫描",
+  OCR_REQUIRED: "扫描件需要 OCR，但当前未启用",
+};
+
 function materialEventLabel(event: JobEvent): string {
-  if (event.type === "failed") return `处理失败 · ${event.messageCode}`;
+  if (event.type === "failed") return MATERIAL_FAILURE_LABELS[event.messageCode]
+    ?? `处理失败 · ${event.messageCode}`;
   return MATERIAL_EVENT_LABELS[event.messageCode]
     ?? MATERIAL_EVENT_LABELS[event.stage]
     ?? event.stage;
@@ -238,6 +246,10 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [materialsError, setMaterialsError] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [materialJob, setMaterialJob] = useState<MaterialJobAccepted | null>(null);
+  const [materialRemovalCandidate, setMaterialRemovalCandidate] = useState<string | null>(null);
+  const [materialRemoving, setMaterialRemoving] = useState<string | null>(null);
+  const [materialRemovalMessage, setMaterialRemovalMessage] = useState<string | null>(null);
+  const [materialRemovalError, setMaterialRemovalError] = useState<string | null>(null);
   const materialStream = useJobEvents({ jobId: materialJob?.jobId ?? null });
   const latestMaterialEvent = materialStream.events.at(-1) ?? null;
   const refreshedMaterialEvent = useRef<string | null>(null);
@@ -258,8 +270,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [semanticResults, setSemanticResults] = useState<DenseRetrievalResult[] | null>(null);
   const [semanticSearching, setSemanticSearching] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
-  const [modelConfigs, setModelConfigs] = useState<ModelConfigVersion[]>([]);
-  const [skillVersions, setSkillVersions] = useState<SkillVersion[]>([]);
+  const [modelConfigs, setModelConfigs] = useState<AgentModelCatalogEntry[]>([]);
+  const [skillVersions, setSkillVersions] = useState<AgentSkillCatalogEntry[]>([]);
   const [selectedModelConfigId, setSelectedModelConfigId] = useState("");
   const [selectedSkillVersionId, setSelectedSkillVersionId] = useState("");
   const [workflowOptionsError, setWorkflowOptionsError] = useState<string | null>(null);
@@ -271,6 +283,7 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const [alignmentStatus, setAlignmentStatus] = useState<Job | null>(null);
   const [aligning, setAligning] = useState(false);
   const [proposals, setProposals] = useState<AlignmentProposal[]>([]);
+  const [supportPanelTab, setSupportPanelTab] = useState<"sources" | "alignment">("sources");
   const [proposalError, setProposalError] = useState<string | null>(null);
   const [adoptingProposalId, setAdoptingProposalId] = useState<string | null>(null);
 
@@ -427,6 +440,23 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
     }
   }, [selectedSubsceneId, currentRoundId]);
 
+  const removeMaterialFromRound = async (material: MaterialListItem) => {
+    if (materialRemoving !== null) return;
+    setMaterialRemoving(material.binding.id);
+    setMaterialRemovalError(null);
+    setMaterialRemovalMessage(null);
+    try {
+      await deactivateMaterialBinding(material.id, material.binding.id);
+      setMaterials((current) => current?.filter((item) => item.binding.id !== material.binding.id) ?? current);
+      setMaterialRemovalCandidate(null);
+      setMaterialRemovalMessage(`“${material.fileName}”已移出本轮，历史记录仍保留。`);
+    } catch (reason) {
+      setMaterialRemovalError(reason instanceof ApiError ? reason.message : "无法将素材移出本轮。");
+    } finally {
+      setMaterialRemoving(null);
+    }
+  };
+
   useEffect(() => {
     if (!latestMaterialEvent
         || (latestMaterialEvent.type !== "completed" && latestMaterialEvent.type !== "failed")
@@ -473,24 +503,22 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
   const loadWorkflowOptions = useCallback(async () => {
     setWorkflowOptionsError(null);
     try {
-      const [connections, skills] = await Promise.all([listModelConnections(), listSkills()]);
-      const [configsByConnection, skillDetails] = await Promise.all([
-        Promise.all(connections.filter((connection) => connection.enabled)
-          .map((connection) => listModelConfigVersions(connection.id))),
-        Promise.all(skills.map((skill) => getSkill(skill.id))),
-      ]);
-      const configs = configsByConnection.flat()
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      const versions = skillDetails.flatMap((detail) => detail.versions)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const catalog = await getAgentConfigurationCatalog();
+      const configs = [...catalog.models]
+        .sort((a, b) => b.version - a.version || a.connectionName.localeCompare(b.connectionName, "zh-CN"));
+      const versions = catalog.skills
+        .filter((skill) => skill.kind === "TEMPLATE" || skill.sceneId === sceneId)
+        .sort((a, b) => b.version - a.version || a.name.localeCompare(b.name, "zh-CN"));
       setModelConfigs(configs);
       setSkillVersions(versions);
-      setSelectedModelConfigId((current) => configs.some((item) => item.id === current) ? current : configs[0]?.id ?? "");
-      setSelectedSkillVersionId((current) => versions.some((item) => item.id === current) ? current : versions[0]?.id ?? "");
+      setSelectedModelConfigId((current) => configs.some((item) => item.versionId === current)
+        ? current : configs[0]?.versionId ?? "");
+      setSelectedSkillVersionId((current) => versions.some((item) => item.versionId === current)
+        ? current : versions[0]?.versionId ?? "");
     } catch (reason) {
       setWorkflowOptionsError(reason instanceof ApiError ? reason.message : "无法读取模型与 Skill 版本。");
     }
-  }, []);
+  }, [sceneId]);
 
   const loadProposals = useCallback(async () => {
     if (!selectedSubsceneId || documentMissing) {
@@ -630,8 +658,8 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
           if (kind === "extraction") {
             setExtracting(false);
             if (status.status === "SUCCEEDED") {
-              setDocMessage("Map/Reduce 萃取完成，已生成新的可验证 Revision。");
               await loadDocument();
+              setDocMessage("Map/Reduce 萃取完成，已生成新的可验证 Revision。");
             } else {
               setDocSaveError(`萃取任务未完成：${status.errorCode ?? status.status}`);
             }
@@ -659,6 +687,34 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
       }
     };
     void tick();
+  };
+
+  const retryExtractionJob = async () => {
+    if (!extractionJob || extracting) return;
+    setExtracting(true);
+    setDocSaveError(null);
+    try {
+      const status = await getJob(extractionJob.jobId);
+      setExtractionStatus(status);
+      if (status.status === "SUCCEEDED") {
+        setExtracting(false);
+        await loadDocument();
+        setDocMessage("Map/Reduce 萃取完成，已生成新的可验证 Revision。");
+      } else if (status.status === "FAILED") {
+        const accepted = await retryJob(extractionJob.jobId, crypto.randomUUID());
+        setExtractionJob(accepted);
+        setExtractionStatus(null);
+        pollWorkflowJob(extractionJob.jobId, "extraction");
+      } else if (status.status === "CANCELLED") {
+        setExtracting(false);
+        setDocSaveError(`萃取任务未完成：${status.errorCode ?? status.status}`);
+      } else {
+        pollWorkflowJob(extractionJob.jobId, "extraction");
+      }
+    } catch (reason) {
+      setExtracting(false);
+      setDocSaveError(reason instanceof ApiError ? reason.message : "无法读取萃取任务状态。");
+    }
   };
 
   const runExtraction = async () => {
@@ -1149,6 +1205,20 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                       ) : null}
                     </div>
                   ) : null}
+                  {materialRemovalMessage ? (
+                    <div className="material-action-note" role="status">
+                      <span>{materialRemovalMessage}</span>
+                      <button type="button" aria-label="关闭素材操作提示"
+                        onClick={() => setMaterialRemovalMessage(null)}>关闭</button>
+                    </div>
+                  ) : null}
+                  {materialRemovalError ? (
+                    <div className="materials-error" role="alert">
+                      <span>{materialRemovalError}</span>
+                      <Button className="button--quiet button--small"
+                        onClick={() => setMaterialRemovalError(null)}>关闭</Button>
+                    </div>
+                  ) : null}
                   {!hasSubscenes ? (
                     <div className="subscene-empty">请先在面板 A 添加子场景。</div>
                   ) : !latestRound ? (
@@ -1175,6 +1245,28 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                           <Status tone={toStatusTone(material.status)}>
                             {MATERIAL_STATUS_LABELS[material.status] ?? material.status}
                           </Status>
+                          <div className="material-row__actions">
+                            {materialRemovalCandidate === material.binding.id ? (
+                              <>
+                                <button type="button" className="material-row__action material-row__action--confirm"
+                                  aria-label={`确认移出本轮 ${material.fileName}`}
+                                  disabled={materialRemoving !== null}
+                                  onClick={() => void removeMaterialFromRound(material)}>
+                                  {materialRemoving === material.binding.id ? "移出中" : "确认"}
+                                </button>
+                                <button type="button" className="material-row__action"
+                                  aria-label={`取消移出本轮 ${material.fileName}`}
+                                  disabled={materialRemoving !== null}
+                                  onClick={() => setMaterialRemovalCandidate(null)}>取消</button>
+                              </>
+                            ) : (
+                              <button type="button" className="material-row__action"
+                                aria-label={`移出本轮 ${material.fileName}`}
+                                title="移出本轮；文件与审计记录仍会保留"
+                                disabled={!canEvaluate || materialRemoving !== null}
+                                onClick={() => setMaterialRemovalCandidate(material.binding.id)}>移出</button>
+                            )}
+                          </div>
                         </article>
                       ))}
                     </div>
@@ -1190,31 +1282,77 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                 <div><span>STEP 02</span><h2 id="step-extraction-title">萃取、核对并固定 Revision</h2><p>{activeSubscene?.name ?? "未选择子场景"} · Map/Reduce 产出 KnowledgeIR；人工保存与 Proposal 采纳均由 ETag 保护。</p></div>
               </header>
               <section className="workflow-runner" aria-label="萃取与对齐任务">
-                <div className="workflow-runner__config">
-                  <label className="field">
-                    <span>模型配置版本</span>
-                    <select value={selectedModelConfigId} onChange={(event) => setSelectedModelConfigId(event.currentTarget.value)}>
-                      <option value="">请选择</option>
-                      {modelConfigs.map((config) => <option key={config.id} value={config.id}>{config.modelId} · v{config.version}</option>)}
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>Skill 版本</span>
-                    <select value={selectedSkillVersionId} onChange={(event) => setSelectedSkillVersionId(event.currentTarget.value)}>
-                      <option value="">请选择</option>
-                      {skillVersions.map((version) => <option key={version.id} value={version.id}>v{version.version} · {version.packageHash.slice(0, 10)}</option>)}
-                    </select>
-                  </label>
-                  <Button className="button--primary button--small" onClick={() => void runExtraction()}
-                    disabled={extracting || !currentRoundId || !selectedModelConfigId || !selectedSkillVersionId}>
-                    {extracting ? "萃取中…" : "开始 Map/Reduce 萃取"}
-                  </Button>
+                <div className="workflow-runner__head">
+                  <div>
+                    <b>萃取运行配置</b>
+                    <span>选定的模型与 Skill 版本会固化到本次任务，保证结果可追溯。</span>
+                  </div>
+                  <Status tone={modelConfigs.length > 0 && skillVersions.length > 0 ? "success" : "warning"}>
+                    {modelConfigs.length} 个模型 · {skillVersions.length} 个 Skill
+                  </Status>
                 </div>
+                <div className="workflow-runner__config">
+                  <label className="field workflow-config-field">
+                    <span><b>模型配置版本</b><small>用于本轮 Map/Reduce 推理</small></span>
+                    <select aria-label="模型配置版本" value={selectedModelConfigId}
+                      onChange={(event) => setSelectedModelConfigId(event.currentTarget.value)}>
+                      <option value="">请选择</option>
+                      {modelConfigs.map((config) => (
+                        <option key={config.versionId} value={config.versionId}>
+                          {config.connectionName} / {config.modelId} · v{config.version}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field workflow-config-field">
+                    <span><b>Skill 版本</b><small>定义萃取边界、结构与来源约束</small></span>
+                    <select aria-label="Skill 版本" value={selectedSkillVersionId}
+                      onChange={(event) => setSelectedSkillVersionId(event.currentTarget.value)}>
+                      <option value="">请选择</option>
+                      {skillVersions.map((version) => (
+                        <option key={version.versionId} value={version.versionId}>
+                          {version.name} · v{version.version} · {version.kind === "TEMPLATE" ? "通用模板" : "场景实例"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="workflow-runner__action">
+                    <Button className="button--primary button--small" onClick={() => void runExtraction()}
+                      disabled={extracting || !currentRoundId || !selectedModelConfigId || !selectedSkillVersionId}>
+                      {extracting ? "萃取中…" : "开始 Map/Reduce 萃取"}
+                    </Button>
+                    <small>{currentRoundId ? "任务将在 Worker 中异步执行" : "请先创建萃取轮次"}</small>
+                  </div>
+                </div>
+                {modelConfigs.length === 0 ? (
+                  <div className="workflow-option-empty" role="status">
+                    <Glyph name="model" size={17} />
+                    <div><b>还没有可用的模型配置版本</b><span>先创建模型连接并保存一个模型配置版本。</span></div>
+                    <Button className="button--text button--small" onClick={() => onNavigate("/models")}>前往模型配置</Button>
+                  </div>
+                ) : null}
+                {skillVersions.length === 0 ? (
+                  <div className="workflow-option-empty" role="status">
+                    <Glyph name="skill" size={17} />
+                    <div><b>还没有可用的 Skill 版本</b><span>系统会提供基础模板，也可以在 Skill 库中创建场景实例。</span></div>
+                    <Button className="button--text button--small" onClick={() => onNavigate("/skills")}>前往 Skill 库</Button>
+                  </div>
+                ) : null}
                 {workflowOptionsError ? <div className="form-error" role="alert">{workflowOptionsError}</div> : null}
                 {extractionJob ? (
                   <div className="job-strip" aria-live="polite">
-                    <div className={`job-strip__pulse job-strip__pulse--${extractionStatus?.status === "SUCCEEDED" ? "closed" : "open"}`} />
-                    <div><b>萃取任务 {extractionJob.jobId}</b><small>{extractionStatus ? `${extractionStatus.stage ?? extractionStatus.status} · ${extractionStatus.percent}%` : "已排队"}</small></div>
+                    <div className={`job-strip__pulse job-strip__pulse--${extractionStatus?.status === "SUCCEEDED" ? "closed" : extractionStatus?.status === "FAILED" ? "failed" : "open"}`} />
+                    <div>
+                      <b>萃取任务 {extractionJob.jobId}</b>
+                      <small>{extractionStatus
+                        ? `${extractionStatus.status}${extractionStatus.errorCode ? ` · ${extractionStatus.errorCode}` : ""}${extractionStatus.stage ? ` · ${extractionStatus.stage}` : ""}`
+                        : "QUEUED"} · {extractionStatus?.percent ?? 0}%</small>
+                    </div>
+                    <progress className="job-strip__progress" max={100} value={extractionStatus?.percent ?? 0} aria-label="萃取任务进度" />
+                    {extractionStatus && ["FAILED", "CANCELLED"].includes(extractionStatus.status) ? (
+                      <Button className="button--quiet button--small" disabled={extracting}
+                        onClick={() => void retryExtractionJob()}>{extracting ? "检查中…" : extractionStatus.status === "FAILED" ? "重试任务" : "刷新状态"}</Button>
+                    ) : <strong>{extractionStatus?.percent ?? 0}%</strong>}
                   </div>
                 ) : null}
               </section>
@@ -1272,78 +1410,106 @@ export function ScenePage({ sceneId, onNavigate }: { sceneId: string; onNavigate
                     </div>
                   </section>
 
-                  <aside className="source-panel">
-                    <div className="source-panel__head"><span><Glyph name="link" size={15} />来源定位</span><b>{doc?.sourceRefs.length ?? 0}</b></div>
-                    <div className="semantic-search">
-                      <form onSubmit={(event) => void runSemanticSearch(event)}>
-                        <label className="field">
-                          <span>中文语义检索</span>
-                          <input value={semanticQuery} maxLength={1000} placeholder="输入业务问题，检索当前轮次可信素材"
-                            onChange={(event) => setSemanticQuery(event.currentTarget.value)} />
-                        </label>
-                        <Button type="submit" className="button--quiet button--small"
-                          disabled={semanticSearching || semanticQuery.trim().length < 2 || !currentRoundId}>
-                          {semanticSearching ? "检索中…" : "检索 Chunk"}
-                        </Button>
-                      </form>
-                      <small>SOURCE / LABELED_TRAIN · Holdout 物理隔离</small>
-                      {semanticError ? <div className="form-error" role="alert">{semanticError}</div> : null}
-                      {semanticResults?.length === 0 ? <p>当前范围没有可用向量结果。</p> : null}
-                      {semanticResults && semanticResults.length > 0 ? (
-                        <div className="semantic-results" aria-live="polite">
-                          {semanticResults.map((result) => (
-                            <article key={result.chunkId}>
-                              <header><code>[{result.sourceRefCode}]</code><b>{(result.score * 100).toFixed(1)}</b></header>
-                              <span>{formatRetrievalLocator(result)}</span>
-                              <p>{result.excerpt}</p>
-                            </article>
-                          ))}
-                        </div>
-                      ) : null}
+                  <aside className="source-panel evidence-panel">
+                    <div className="source-panel__head">
+                      <span><Glyph name="link" size={15} />证据与对齐</span>
+                      <b>{(doc?.sourceRefs.length ?? 0) + proposals.length}</b>
                     </div>
-                    {!doc || doc.sourceRefs.length === 0 ? (
-                      <div className="subscene-empty">当前 Revision 尚无已验证来源；请先运行萃取。</div>
-                    ) : (
-                      doc.sourceRefs.map((ref) => (
-                        <div className="source-card" key={ref.code}>
-                          <code>[{ref.code}]</code><h3>{formatSourceLocator(ref)}</h3>
-                          <span>素材 {ref.materialId.slice(0, 8)} · Chunk {ref.chunkId.slice(0, 8)} · {ref.excerptHash.slice(0, 12)}…</span>
-                        </div>
-                      ))
-                    )}
-                    <div className="proposal-card">
-                      <span>AI 对齐 Proposal</span>
-                      <label className="field">
-                        <span>对齐动作</span>
-                        <select value={alignmentAction} onChange={(event) => setAlignmentAction(event.currentTarget.value as AlignmentAction)}>
-                          <option value="CONSISTENCY">一致性检查</option>
-                          <option value="REGULATORY">监管对齐</option>
-                          <option value="GAP_ANALYSIS">缺失分析</option>
-                          <option value="REWRITE">结构改写</option>
-                        </select>
-                      </label>
-                      <Button className="button--quiet button--small" disabled={!doc || isDirty || aligning}
-                        onClick={() => void runAlignment()}>{aligning ? "生成中…" : "生成 Proposal"}</Button>
-                      {alignmentJob ? <small>{alignmentStatus ? `${alignmentStatus.stage ?? alignmentStatus.status} · ${alignmentStatus.percent}%` : "已排队"}</small> : null}
-                      {proposalError ? <div className="form-error" role="alert">{proposalError}</div> : null}
+                    <div className="evidence-panel__tabs" role="tablist" aria-label="证据与对齐工具">
+                      <button type="button" role="tab" aria-selected={supportPanelTab === "sources"}
+                        className={supportPanelTab === "sources" ? "active" : ""}
+                        onClick={() => setSupportPanelTab("sources")}>
+                        来源证据 <span>{doc?.sourceRefs.length ?? 0}</span>
+                      </button>
+                      <button type="button" role="tab" aria-selected={supportPanelTab === "alignment"}
+                        className={supportPanelTab === "alignment" ? "active" : ""}
+                        onClick={() => setSupportPanelTab("alignment")}>
+                        AI 对齐 <span>{proposals.length}</span>
+                      </button>
                     </div>
-                    {proposals.map((proposal) => {
-                      const diff = proposal.structuredPatch.diff;
-                      return (
-                        <div className="proposal-card proposal-card--ready" key={proposal.id}>
-                          <span>{proposal.action} · {proposal.status}</span>
-                          <b>规则 +{diff.addedRuleIds.length} / -{diff.removedRuleIds.length} / 改 {diff.changedRuleIds.length}</b>
-                          <p>{proposal.reason}</p>
-                          <small>流程 +{diff.addedFlowIds.length} / -{diff.removedFlowIds.length} / 改 {diff.changedFlowIds.length} · 来源 Δ {diff.sourceRefDelta}</small>
-                          {proposal.status === "READY" ? (
-                            <Button className="button--primary button--small" disabled={isDirty || adoptingProposalId !== null}
-                              onClick={() => void adoptProposal(proposal)}>
-                              {adoptingProposalId === proposal.id ? "采纳中…" : "按基线 ETag 采纳"}
-                            </Button>
+                    <div className="evidence-panel__body">
+                      {supportPanelTab === "sources" ? (
+                        <div role="tabpanel" aria-label="来源证据">
+                          <div className="semantic-search">
+                            <form onSubmit={(event) => void runSemanticSearch(event)}>
+                              <label className="field">
+                                <span>中文语义检索</span>
+                                <input value={semanticQuery} maxLength={1000} placeholder="检索当前轮次可信素材"
+                                  onChange={(event) => setSemanticQuery(event.currentTarget.value)} />
+                              </label>
+                              <Button type="submit" className="button--quiet button--small"
+                                disabled={semanticSearching || semanticQuery.trim().length < 2 || !currentRoundId}>
+                                {semanticSearching ? "检索中…" : "检索 Chunk"}
+                              </Button>
+                            </form>
+                            <small>SOURCE / LABELED_TRAIN · Holdout 物理隔离</small>
+                            {semanticError ? <div className="form-error" role="alert">{semanticError}</div> : null}
+                            {semanticResults?.length === 0 ? <p>当前范围没有可用向量结果。</p> : null}
+                            {semanticResults && semanticResults.length > 0 ? (
+                              <div className="semantic-results" aria-live="polite">
+                                {semanticResults.map((result) => (
+                                  <article key={result.chunkId}>
+                                    <header><code>[{result.sourceRefCode}]</code><b>{(result.score * 100).toFixed(1)}</b></header>
+                                    <span>{formatRetrievalLocator(result)}</span>
+                                    <p>{result.excerpt}</p>
+                                  </article>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                          {!doc || doc.sourceRefs.length === 0 ? (
+                            <div className="subscene-empty">当前 Revision 尚无已验证来源；请先运行萃取。</div>
+                          ) : (
+                            doc.sourceRefs.map((ref) => (
+                              <div className="source-card" key={ref.code}>
+                                <code>[{ref.code}]</code><h3>{formatSourceLocator(ref)}</h3>
+                                <span>素材 {ref.materialId.slice(0, 8)} · Chunk {ref.chunkId.slice(0, 8)} · {ref.excerptHash.slice(0, 12)}…</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      ) : (
+                        <div role="tabpanel" aria-label="AI 对齐">
+                          <div className="proposal-card proposal-card--composer">
+                            <span>生成结构化 Proposal</span>
+                            <p>只生成可审计的修改建议，不会直接覆盖当前 Revision。</p>
+                            <label className="field">
+                              <span>对齐动作</span>
+                              <select value={alignmentAction} onChange={(event) => setAlignmentAction(event.currentTarget.value as AlignmentAction)}>
+                                <option value="CONSISTENCY">一致性检查</option>
+                                <option value="REGULATORY">监管对齐</option>
+                                <option value="GAP_ANALYSIS">缺失分析</option>
+                                <option value="REWRITE">结构改写</option>
+                              </select>
+                            </label>
+                            <Button className="button--quiet button--small" disabled={!doc || isDirty || aligning}
+                              onClick={() => void runAlignment()}>{aligning ? "生成中…" : "生成 Proposal"}</Button>
+                            {alignmentJob ? <small>{alignmentStatus ? `${alignmentStatus.stage ?? alignmentStatus.status} · ${alignmentStatus.percent}%` : "已排队"}</small> : null}
+                            {proposalError ? <div className="form-error" role="alert">{proposalError}</div> : null}
+                          </div>
+                          {proposals.length === 0 ? (
+                            <div className="subscene-empty">暂无 Proposal。文档保存后可发起一致性、监管或缺失分析。</div>
                           ) : null}
+                          {proposals.map((proposal) => {
+                            const diff = proposal.structuredPatch.diff;
+                            return (
+                              <div className="proposal-card proposal-card--ready" key={proposal.id}>
+                                <span>{proposal.action} · {proposal.status}</span>
+                                <b>规则 +{diff.addedRuleIds.length} / -{diff.removedRuleIds.length} / 改 {diff.changedRuleIds.length}</b>
+                                <p>{proposal.reason}</p>
+                                <small>流程 +{diff.addedFlowIds.length} / -{diff.removedFlowIds.length} / 改 {diff.changedFlowIds.length} · 来源 Δ {diff.sourceRefDelta}</small>
+                                {proposal.status === "READY" ? (
+                                  <Button className="button--primary button--small" disabled={isDirty || adoptingProposalId !== null}
+                                    onClick={() => void adoptProposal(proposal)}>
+                                    {adoptingProposalId === proposal.id ? "采纳中…" : "按基线 ETag 采纳"}
+                                  </Button>
+                                ) : null}
+                              </div>
+                            );
+                          })}
                         </div>
-                      );
-                    })}
+                      )}
+                    </div>
                   </aside>
 
                   {revisionsOpen ? (

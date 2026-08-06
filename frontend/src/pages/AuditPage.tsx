@@ -88,8 +88,8 @@ export function AuditPage() {
     <div className="page audit-page">
       <PageHeader
         eyebrow="治理 / 审计"
-        title="从操作到内容版本的证据链"
-        description="只记录必要元数据、Revision/hash、Job 和 trace ID；正文、Prompt、模型响应与凭证不会进入审计日志。仅 ADMIN 可查看。"
+        title="审计记录"
+        description="查询用户、系统和智能体的关键操作。日志只记录必要元数据与版本标识，不包含正文、Prompt、模型响应或凭据。"
         actions={<Button className="button--quiet" onClick={exportCsv} disabled={visible.length === 0}><Glyph name="download" />导出筛选结果</Button>}
       />
       {loadError ? (

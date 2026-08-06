@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -64,10 +65,90 @@ public class KnowledgeIrValidator {
                 ir.sourceRefs());
     }
 
+    /**
+     * Replaces model-authored identifiers with deterministic server-owned identifiers and removes
+     * unsupported graph references before the strict validation pass. Model output remains subject
+     * to the complete JSON Schema and source-reference checks after normalization.
+     */
+    public KnowledgeIr normalizeGenerated(KnowledgeIr ir) {
+        LinkedHashMap<String, KnowledgeIr.Rule> rules = new LinkedHashMap<>();
+        for (KnowledgeIr.Rule rule : ir.rules()) {
+            KnowledgeIr.Rule normalized = new KnowledgeIr.Rule(stableRuleId(ir.metadata(), rule),
+                    rule.title(), rule.condition(), rule.conclusion(), rule.priority(),
+                    distinct(rule.exceptions()), distinct(rule.sourceRefs()));
+            rules.merge(normalized.id(), normalized, this::mergeRuleEvidence);
+        }
+
+        List<KnowledgeIr.Flow> flows = new ArrayList<>();
+        for (int flowIndex = 0; flowIndex < ir.flows().size(); flowIndex++) {
+            KnowledgeIr.Flow flow = ir.flows().get(flowIndex);
+            String flowId = stableGeneratedId("F-", flow.name(), Integer.toString(flowIndex));
+            List<KnowledgeIr.FlowNode> nodes = new ArrayList<>();
+            Map<String, String> nodeIds = new LinkedHashMap<>();
+            for (int nodeIndex = 0; nodeIndex < flow.nodes().size(); nodeIndex++) {
+                KnowledgeIr.FlowNode node = flow.nodes().get(nodeIndex);
+                String nodeId = stableGeneratedId("N-", flowId, node.label(), Integer.toString(nodeIndex));
+                List<String> refs = distinct(node.sourceRefs());
+                nodes.add(new KnowledgeIr.FlowNode(nodeId, node.label(), node.critical() && !refs.isEmpty(), refs));
+                nodeIds.putIfAbsent(node.id(), nodeId);
+            }
+            List<KnowledgeIr.FlowEdge> edges = new ArrayList<>();
+            for (int edgeIndex = 0; edgeIndex < flow.edges().size(); edgeIndex++) {
+                KnowledgeIr.FlowEdge edge = flow.edges().get(edgeIndex);
+                String source = nodeIds.get(edge.source());
+                String target = nodeIds.get(edge.target());
+                if (source == null || target == null) {
+                    continue;
+                }
+                String edgeId = stableGeneratedId("E-", flowId, source, target, edge.label(),
+                        Integer.toString(edgeIndex));
+                edges.add(new KnowledgeIr.FlowEdge(edgeId, source, target, edge.label()));
+            }
+            flows.add(new KnowledgeIr.Flow(flowId, flow.name(), nodes, edges));
+        }
+
+        List<KnowledgeIr.Conflict> conflicts = new ArrayList<>();
+        for (int index = 0; index < ir.conflicts().size(); index++) {
+            KnowledgeIr.Conflict conflict = ir.conflicts().get(index);
+            List<String> refs = distinct(conflict.sourceRefs());
+            if (!refs.isEmpty()) {
+                conflicts.add(new KnowledgeIr.Conflict(
+                        stableGeneratedId("C-", conflict.description(), Integer.toString(index)),
+                        conflict.description(), refs));
+            }
+        }
+
+        List<KnowledgeIr.Gap> gaps = new ArrayList<>();
+        for (int index = 0; index < ir.gaps().size(); index++) {
+            KnowledgeIr.Gap gap = ir.gaps().get(index);
+            gaps.add(new KnowledgeIr.Gap(stableGeneratedId("G-", gap.description(), Integer.toString(index)),
+                    gap.description()));
+        }
+        return new KnowledgeIr(ir.schemaVersion(), ir.metadata(), List.copyOf(rules.values()), flows,
+                conflicts, gaps, ir.sourceRefs());
+    }
+
     public String stableRuleId(KnowledgeIr.Metadata metadata, KnowledgeIr.Rule rule) {
         String normalized = normalize(metadata.subSceneId().toString()) + "\n"
                 + normalize(rule.condition()) + "\n" + normalize(rule.conclusion());
         return "R-" + Hashes.sha256(normalized).substring(0, 16);
+    }
+
+    private KnowledgeIr.Rule mergeRuleEvidence(KnowledgeIr.Rule left, KnowledgeIr.Rule right) {
+        List<String> exceptions = new ArrayList<>(left.exceptions());
+        exceptions.addAll(right.exceptions());
+        List<String> refs = new ArrayList<>(left.sourceRefs());
+        refs.addAll(right.sourceRefs());
+        return new KnowledgeIr.Rule(left.id(), left.title(), left.condition(), left.conclusion(),
+                Math.max(left.priority(), right.priority()), distinct(exceptions), distinct(refs));
+    }
+
+    private String stableGeneratedId(String prefix, String... values) {
+        return prefix + Hashes.sha256(String.join("\n", values)).substring(0, 16);
+    }
+
+    private <T> List<T> distinct(List<T> values) {
+        return List.copyOf(new LinkedHashSet<>(values));
     }
 
     private void validateSemantics(KnowledgeIr ir) {

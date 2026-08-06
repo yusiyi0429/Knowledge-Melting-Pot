@@ -294,6 +294,27 @@ public class MaterialService {
         return materialRepository.findBindings(materialId);
     }
 
+    @Transactional
+    public void deactivateBinding(UUID materialId, UUID bindingId, UUID actorId, String traceId) {
+        if (materialId == null || bindingId == null || actorId == null) {
+            throw new IllegalArgumentException("materialId, bindingId and actorId are required");
+        }
+        get(materialId);
+        RoundMaterial binding = materialRepository.findBindings(materialId).stream()
+                .filter(candidate -> candidate.id().equals(bindingId))
+                .findFirst()
+                .orElseThrow(() -> new NotFoundException("material binding does not exist"));
+        if (!binding.active()) {
+            return;
+        }
+        if (!materialRepository.deactivateBinding(materialId, bindingId)) {
+            throw new ConflictException("material binding could not be deactivated");
+        }
+        auditService.record(actorId, "MATERIAL_BINDING_DEACTIVATED", "MATERIAL", materialId,
+                Map.of("bindingId", bindingId, "roundId", binding.roundId(),
+                        "subSceneId", binding.subSceneId()), traceId);
+    }
+
     private List<SubScene> resolveTargets(ExtractionRound round, Set<UUID> requestedIds,
             MaterialShareScope shareScope) {
         SubScene primary = sceneRepository.findSubScene(round.subSceneId())

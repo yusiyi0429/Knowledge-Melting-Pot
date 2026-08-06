@@ -19,6 +19,8 @@ public interface MaterialRepository {
 
     List<RoundMaterial> findBindings(UUID materialId);
 
+    boolean deactivateBinding(UUID materialId, UUID bindingId);
+
     MaterialUploadIntent insertIntent(MaterialUploadIntent intent);
 
     Optional<MaterialUploadIntent> findIntent(UUID intentId);

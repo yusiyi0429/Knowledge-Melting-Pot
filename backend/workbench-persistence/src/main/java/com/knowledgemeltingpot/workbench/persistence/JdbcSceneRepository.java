@@ -42,7 +42,10 @@ public class JdbcSceneRepository implements SceneRepository {
 
     @Override
     public Optional<Scene> findScene(UUID id) {
-        return jdbc.sql("SELECT id, name, description, created_at, updated_at FROM scene WHERE id = :id")
+        return jdbc.sql("""
+                SELECT id, name, description, created_at, updated_at
+                FROM scene WHERE id = :id AND archived_at IS NULL
+                """)
                 .param("id", id)
                 .query(JdbcSceneRepository::mapScene)
                 .optional();
@@ -50,15 +53,23 @@ public class JdbcSceneRepository implements SceneRepository {
 
     @Override
     public List<Scene> findAllScenes() {
-        return jdbc.sql("SELECT id, name, description, created_at, updated_at FROM scene ORDER BY updated_at DESC, id")
+        return jdbc.sql("""
+                SELECT id, name, description, created_at, updated_at
+                FROM scene WHERE archived_at IS NULL ORDER BY updated_at DESC, id
+                """)
                 .query(JdbcSceneRepository::mapScene)
                 .list();
     }
 
     @Override
-    public boolean deleteScene(UUID id) {
-        return jdbc.sql("DELETE FROM scene WHERE id = :id")
+    public boolean archiveScene(UUID id, UUID actorId, java.time.Instant archivedAt) {
+        return jdbc.sql("""
+                UPDATE scene SET archived_at = :archivedAt, archived_by = :actorId
+                WHERE id = :id AND archived_at IS NULL
+                """)
                 .param("id", id)
+                .param("actorId", actorId)
+                .param("archivedAt", JdbcTimes.toJdbc(archivedAt))
                 .update() == 1;
     }
 
@@ -85,8 +96,10 @@ public class JdbcSceneRepository implements SceneRepository {
     @Override
     public Optional<SubScene> findSubScene(UUID id) {
         return jdbc.sql("""
-                SELECT id, scene_id, name, description, created_at, updated_at
-                FROM sub_scene WHERE id = :id
+                SELECT ss.id, ss.scene_id, ss.name, ss.description, ss.created_at, ss.updated_at
+                FROM sub_scene ss
+                JOIN scene s ON s.id = ss.scene_id AND s.archived_at IS NULL
+                WHERE ss.id = :id
                 """)
                 .param("id", id)
                 .query(JdbcSceneRepository::mapSubScene)
@@ -96,8 +109,10 @@ public class JdbcSceneRepository implements SceneRepository {
     @Override
     public List<SubScene> findSubScenes(UUID sceneId) {
         return jdbc.sql("""
-                SELECT id, scene_id, name, description, created_at, updated_at
-                FROM sub_scene WHERE scene_id = :sceneId ORDER BY created_at, id
+                SELECT ss.id, ss.scene_id, ss.name, ss.description, ss.created_at, ss.updated_at
+                FROM sub_scene ss
+                JOIN scene s ON s.id = ss.scene_id AND s.archived_at IS NULL
+                WHERE ss.scene_id = :sceneId ORDER BY ss.created_at, ss.id
                 """)
                 .param("sceneId", sceneId)
                 .query(JdbcSceneRepository::mapSubScene)
@@ -107,8 +122,11 @@ public class JdbcSceneRepository implements SceneRepository {
     @Override
     public Optional<ExtractionRound> findRound(UUID id) {
         return jdbc.sql("""
-                SELECT id, sub_scene_id, round_number, status, created_at, updated_at
-                FROM extraction_round WHERE id = :id
+                SELECT er.id, er.sub_scene_id, er.round_number, er.status, er.created_at, er.updated_at
+                FROM extraction_round er
+                JOIN sub_scene ss ON ss.id = er.sub_scene_id
+                JOIN scene s ON s.id = ss.scene_id AND s.archived_at IS NULL
+                WHERE er.id = :id
                 """)
                 .param("id", id)
                 .query((resultSet, rowNumber) -> new ExtractionRound(
@@ -123,7 +141,11 @@ public class JdbcSceneRepository implements SceneRepository {
 
     @Override
     public ExtractionRound createNextRound(UUID subSceneId, UUID roundId, java.time.Instant now) {
-        jdbc.sql("SELECT id FROM sub_scene WHERE id = :id FOR UPDATE")
+        jdbc.sql("""
+                SELECT ss.id FROM sub_scene ss
+                JOIN scene s ON s.id = ss.scene_id AND s.archived_at IS NULL
+                WHERE ss.id = :id FOR UPDATE OF ss
+                """)
                 .param("id", subSceneId)
                 .query(UUID.class)
                 .optional()

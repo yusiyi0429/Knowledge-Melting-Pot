@@ -41,6 +41,8 @@ export class ApiError extends Error {
   }
 }
 
+export const AUTHENTICATION_REQUIRED_EVENT = "kmp:authentication-required";
+
 async function readProblem(response: Response): Promise<Problem | undefined> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/problem+json") && !contentType.includes("application/json")) {
@@ -55,6 +57,9 @@ async function readProblem(response: Response): Promise<Problem | undefined> {
 
 async function requireSuccess(response: Response, fallback: string): Promise<Response> {
   if (response.ok) return response;
+  if (response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTHENTICATION_REQUIRED_EVENT));
+  }
   const problem = await readProblem(response);
   throw new ApiError(problem?.detail || fallback, response.status, problem);
 }
@@ -127,6 +132,21 @@ export type ModelProvider = "OPENAI_COMPATIBLE" | "DASHSCOPE";
 
 export type ModelConnectionValidationStatus = "UNTESTED" | "CONNECTIVITY_VERIFIED";
 
+export interface ModelEndpointRule {
+  id: string;
+  host: string;
+  allowedPorts: number[];
+  allowHttp: boolean;
+  allowPrivateAddresses: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ModelEndpointRuleDraft = Pick<
+  ModelEndpointRule,
+  "host" | "allowedPorts" | "allowHttp" | "allowPrivateAddresses"
+>;
+
 export interface ModelConnection {
   id: string;
   name: string;
@@ -175,6 +195,17 @@ export interface ModelConnectionTestResult {
   credentialConfigured: boolean;
   messageCode: string;
   testedAt: string;
+}
+
+export interface ModelConnectionSetupDraft extends ModelConnectionDraft {
+  modelId: string;
+  allowPrivateAddresses: boolean;
+}
+
+export interface ModelConnectionSetupResult {
+  connection: ModelConnection;
+  configVersion: ModelConfigVersion;
+  connectionTest: ModelConnectionTestResult;
 }
 
 export interface EmbeddingProfile {
@@ -235,12 +266,52 @@ export async function listModelConnections(): Promise<ModelConnection[]> {
   return getJson("/api/v1/model-connections", "无法读取模型连接列表。");
 }
 
+export async function listModelEndpointRules(): Promise<ModelEndpointRule[]> {
+  return getJson("/api/v1/model-endpoint-rules", "无法读取模型访问策略。");
+}
+
+export async function createModelEndpointRule(draft: ModelEndpointRuleDraft): Promise<ModelEndpointRule> {
+  const response = await requireSuccess(
+    await postWithCsrf("/api/v1/model-endpoint-rules", draft),
+    "创建可信模型主机失败。",
+  );
+  return (await response.json()) as ModelEndpointRule;
+}
+
+export async function updateModelEndpointRule(
+  id: string,
+  draft: ModelEndpointRuleDraft,
+): Promise<ModelEndpointRule> {
+  const response = await requireSuccess(
+    await mutateWithCsrf(`/api/v1/model-endpoint-rules/${id}`, "PUT", draft),
+    "更新可信模型主机失败。",
+  );
+  return (await response.json()) as ModelEndpointRule;
+}
+
+export async function deleteModelEndpointRule(id: string): Promise<void> {
+  await requireSuccess(
+    await mutateWithCsrf(`/api/v1/model-endpoint-rules/${id}`, "DELETE"),
+    "删除可信模型主机失败。",
+  );
+}
+
 export async function createModelConnection(draft: ModelConnectionDraft): Promise<ModelConnection> {
   const response = await requireSuccess(
     await postWithCsrf("/api/v1/model-connections", withCredential(draft)),
     "创建模型连接失败。",
   );
   return (await response.json()) as ModelConnection;
+}
+
+export async function setupModelConnection(
+  draft: ModelConnectionSetupDraft,
+): Promise<ModelConnectionSetupResult> {
+  const response = await requireSuccess(
+    await postWithCsrf("/api/v1/model-connection-setups", withCredential(draft)),
+    "配置模型连接失败。",
+  );
+  return (await response.json()) as ModelConnectionSetupResult;
 }
 
 export async function updateModelConnection(
@@ -578,6 +649,13 @@ export async function updateScene(id: string, draft: UpdateSceneDraft): Promise<
     "保存场景失败。",
   );
   return (await response.json()) as Scene;
+}
+
+export async function deleteScene(id: string): Promise<void> {
+  await requireSuccess(
+    await mutateWithCsrf(`/api/v1/scenes/${id}`, "DELETE"),
+    "删除场景失败。",
+  );
 }
 
 export interface SubScene {
@@ -948,8 +1026,31 @@ export async function abortUpload(intentId: string): Promise<void> {
   );
 }
 
+export async function deactivateMaterialBinding(materialId: string, bindingId: string): Promise<void> {
+  await requireSuccess(
+    await mutateWithCsrf(
+      `/api/v1/materials/${encodeURIComponent(materialId)}/bindings/${encodeURIComponent(bindingId)}`,
+      "DELETE",
+    ),
+    "无法将素材移出本轮。",
+  );
+}
+
 export async function getJob(jobId: string): Promise<Job> {
   return getJson(`/api/v1/jobs/${jobId}`, "无法读取任务状态。");
+}
+
+export async function retryJob(jobId: string, idempotencyKey: string): Promise<JobAccepted> {
+  const response = await requireSuccess(
+    await mutateWithCsrfHeaders(
+      `/api/v1/jobs/${encodeURIComponent(jobId)}/retry`,
+      "POST",
+      {},
+      { "Idempotency-Key": idempotencyKey },
+    ),
+    "重试任务失败。",
+  );
+  return (await response.json()) as JobAccepted;
 }
 
 export interface SourceRefEntry {

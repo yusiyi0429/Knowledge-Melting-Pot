@@ -214,16 +214,11 @@ final class OpenJiuwenAgentRuntime implements AgentRuntimeLifecycle {
 
     private AgentExecutionResult fail(RuntimeException exception, Instant startedAt) {
         state.set(AgentRuntimeState.FAILED);
-        String safeMessage = SensitiveTextRedactor.redact(exception.getMessage());
-        if (safeMessage.isBlank()) {
-            safeMessage = "Agent execution failed";
-        }
         LOGGER.log(
                 System.Logger.Level.ERROR,
-                "Agent job {0} failed with {1}: {2}",
+                "Agent job {0} failed with {1}",
                 jobId,
-                exception.getClass().getSimpleName(),
-                safeMessage);
+                exception.getClass().getSimpleName());
         Instant completedAt = notBefore(clock.instant(), startedAt);
         return new AgentExecutionResult(
                 jobId,
@@ -231,13 +226,15 @@ final class OpenJiuwenAgentRuntime implements AgentRuntimeLifecycle {
                 AgentExecutionStatus.FAILED,
                 "",
                 "AGENT_RUNTIME_FAILURE",
-                safeMessage,
+                "Agent execution failed",
                 startedAt,
                 completedAt);
     }
 
     private SdkTerminalResult fromStreamTerminal(MappedSdkEvent terminal, String collectedText) {
-        String terminalText = terminal.text().isBlank() ? collectedText : terminal.text();
+        String terminalText = "workflow_end".equals(terminal.code()) && !collectedText.isBlank()
+                ? collectedText
+                : terminal.text().isBlank() ? collectedText : terminal.text();
         return switch (terminal.type()) {
             case COMPLETED -> SdkTerminalResult.completed(terminalText);
             case INPUT_REQUIRED -> SdkTerminalResult.inputRequired(terminalText);

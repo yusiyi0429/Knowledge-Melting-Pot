@@ -40,6 +40,7 @@ import com.knowledgemeltingpot.workbench.domain.RoundMaterial;
 import com.knowledgemeltingpot.workbench.domain.SecurityPartition;
 import java.io.IOException;
 import java.io.ByteArrayInputStream;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -143,6 +144,34 @@ class IngestMaterialJobHandlerTest {
                 JOB_ID, IngestStage.OBJECT_VERIFIED, "TxtParser", "1", NOW);
         verify(context).diagnostic(eq(80), eq("CHUNKS_COMMITTED"), eq("EMBEDDING_PROVIDER_UNCONFIGURED"));
         verify(context).progress(90, "OBJECT_VERIFYING");
+    }
+
+    @Test
+    void keepsValidatedDocxSuffixForContainerMimeDetection() throws Exception {
+        Material docx = new Material(MATERIAL_ID, "rules.docx", MaterialFormat.DOCX,
+                MaterialFormat.DOCX.mediaType(), OBJECT_KEY, SHA256, 11, MaterialStatus.UPLOADED, NOW, NOW);
+        when(materialRepository.findById(MATERIAL_ID)).thenReturn(Optional.of(docx));
+        when(parser.detectMediaType(any())).thenAnswer(invocation -> {
+            Path downloaded = invocation.getArgument(0);
+            assertThat(downloaded.getFileName().toString()).endsWith(".docx");
+            return MaterialFormat.DOCX.mediaType();
+        });
+        when(parser.parse(any(), eq(MaterialFormat.DOCX)))
+                .thenReturn(new MaterialParserPort.MaterialParseResult.Parsed("DocxParser", "1",
+                        List.of(new MaterialParserPort.ParsedSegment(0,
+                                new ChunkLocator(ChunkLocator.LocatorType.DOCX_PARAGRAPH,
+                                        null, 0, null, null, null, null, null, null, null, null),
+                                "hello world"))));
+        when(objectStorage.head(eq(ObjectStoragePort.StorageZone.VERIFIED_KNOWLEDGE), any()))
+                .thenReturn(new ObjectStoragePort.ObjectHead("knowledge/verified.docx", 11, "\"etag\"", NOW));
+        when(objectStorage.open(eq(ObjectStoragePort.StorageZone.VERIFIED_KNOWLEDGE), any()))
+                .thenAnswer(ignored -> new ByteArrayInputStream(
+                        "hello world".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        JobHandlingResult result = handler.handle(leasedJob(1, 1, 11, MaterialFormat.DOCX), mockContext());
+
+        assertThat(result.succeeded()).isTrue();
+        verify(parser).parse(any(), eq(MaterialFormat.DOCX));
     }
 
     @Test

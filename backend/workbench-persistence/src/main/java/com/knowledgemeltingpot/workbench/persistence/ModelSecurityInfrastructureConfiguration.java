@@ -5,6 +5,7 @@ import com.knowledgemeltingpot.workbench.application.port.CredentialCipher;
 import com.knowledgemeltingpot.workbench.application.port.EmbeddingPort;
 import com.knowledgemeltingpot.workbench.application.port.ModelConnectionRepository;
 import com.knowledgemeltingpot.workbench.application.port.ModelConnectionTestPort;
+import com.knowledgemeltingpot.workbench.application.port.ModelEndpointRuleSource;
 import com.knowledgemeltingpot.workbench.application.security.ModelEndpointPolicy;
 import com.knowledgemeltingpot.workbench.domain.ModelProvider;
 import java.net.InetAddress;
@@ -40,14 +41,16 @@ public class ModelSecurityInfrastructureConfiguration {
 
     @Bean
     ModelEndpointPolicy modelEndpointPolicy(
-            @Value("${workbench.model-security.allowed-hosts:${KMP_ALLOWED_MODEL_HOSTS:}}") String rawAllowedHosts) {
+            @Value("${workbench.model-security.allowed-hosts:${KMP_ALLOWED_MODEL_HOSTS:}}") String rawAllowedHosts,
+            ModelEndpointRuleSource ruleSource) {
         Set<String> allowedHosts = new LinkedHashSet<>();
         for (String value : rawAllowedHosts.split(",")) {
             if (!value.isBlank()) {
                 allowedHosts.add(value.trim());
             }
         }
-        return new ModelEndpointPolicy(allowedHosts, ModelSecurityInfrastructureConfiguration::resolveAll);
+        return new ModelEndpointPolicy(allowedHosts, ruleSource,
+                ModelSecurityInfrastructureConfiguration::resolveAll);
     }
 
     @Bean

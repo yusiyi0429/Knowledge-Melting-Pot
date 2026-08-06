@@ -328,8 +328,8 @@ export function SkillsPage() {
     <div className="page">
       <PageHeader
         eyebrow="治理 / Skill 库"
-        title="模板是起点，版本才是交付物"
-        description="Skill 支持只读资源包（RESOURCE_ONLY）和受限声明式规则（SANDBOX_V1）；不执行上传的源代码。仅 ADMIN 可建模板，OPERATOR/ADMIN 可建实例与版本。"
+        title="Skill 模板与版本"
+        description="管理通用模板、场景实例和不可变版本。当前仅支持只读资源与受限声明式规则，不执行上传代码。"
         actions={isAdmin ? <Button className="button--primary" onClick={() => setDialog({ mode: "template" })}><Glyph name="plus" />新建模板</Button> : null}
       />
       <div className="security-note"><Glyph name="lock" size={17} /><div><b>安全边界</b><p>不执行 Skill 包内的 Shell、Python、JavaScript、WASM、二进制或校验脚本；SANDBOX_V1 仅运行经校验的声明式分类规则。</p></div><Status tone="success">受限声明式模式</Status></div>

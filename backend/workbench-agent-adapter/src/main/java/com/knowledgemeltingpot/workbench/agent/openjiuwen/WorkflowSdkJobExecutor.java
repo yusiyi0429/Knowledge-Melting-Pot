@@ -2,11 +2,9 @@ package com.knowledgemeltingpot.workbench.agent.openjiuwen;
 
 import com.knowledgemeltingpot.workbench.agent.AgentExecutionRequest;
 import com.knowledgemeltingpot.workbench.agent.AgentModelConfiguration;
-import com.openjiuwen.core.session.WorkflowSessionApi;
-import com.openjiuwen.core.session.stream.StreamMode;
+import com.openjiuwen.core.session.stream.OutputSchema;
 import com.openjiuwen.core.workflow.Workflow;
 import com.openjiuwen.core.workflow.WorkflowCard;
-import com.openjiuwen.core.workflow.WorkflowChunk;
 import com.openjiuwen.core.workflow.WorkflowOutput;
 import com.openjiuwen.core.workflow.component.End;
 import com.openjiuwen.core.workflow.component.Start;
@@ -41,19 +39,25 @@ final class WorkflowSdkJobExecutor implements SdkJobExecutor {
         Workflow workflow = createWorkflow(false);
         WorkflowOutput output = workflow.invoke(
                 Map.of("query", request.prompt()),
-                new WorkflowSessionApi(sessionId),
+                SdkModelConfigurationMapper.workflowSession(modelConfiguration, sessionId),
                 null);
         return SdkResultMapper.fromWorkflow(output);
     }
 
     @Override
     public Iterator<?> stream() {
-        Workflow workflow = createWorkflow(true);
-        Iterator<WorkflowChunk> iterator = workflow.stream(
-                Map.of("query", request.prompt()),
-                new WorkflowSessionApi(sessionId),
-                null,
-                List.of(StreamMode.OUTPUT));
+        // agent-core-java 0.1.13 does not expose the complete Workflow answer through
+        // its stream chunks. Invoke once and adapt the complete typed terminal result
+        // to the same event boundary; ReAct execution remains genuinely streaming.
+        SdkTerminalResult terminal = execute();
+        OutputSchema event = switch (terminal.status()) {
+            case COMPLETED -> new OutputSchema(
+                    "workflow_final", 0, Map.of("output", terminal.output()));
+            case INPUT_REQUIRED -> new OutputSchema("__interaction__", 0, "需要补充输入后继续执行");
+            case FAILED -> new OutputSchema("error", 0, "模型执行失败");
+            case CANCELLED -> new OutputSchema("error", 0, "任务已取消");
+        };
+        Iterator<OutputSchema> iterator = List.of(event).iterator();
         activeStream.set(iterator);
         return iterator;
     }

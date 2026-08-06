@@ -3,10 +3,10 @@ package com.knowledgemeltingpot.workbench.application.port;
 import com.knowledgemeltingpot.workbench.domain.Scene;
 import com.knowledgemeltingpot.workbench.domain.SubScene;
 import com.knowledgemeltingpot.workbench.domain.ExtractionRound;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.time.Instant;
 
 public interface SceneRepository {
     Scene save(Scene scene);
@@ -15,7 +15,7 @@ public interface SceneRepository {
 
     List<Scene> findAllScenes();
 
-    boolean deleteScene(UUID id);
+    boolean archiveScene(UUID id, UUID actorId, Instant archivedAt);
 
     SubScene save(SubScene subScene);
 

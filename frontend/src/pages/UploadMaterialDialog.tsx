@@ -2,10 +2,28 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { Button, Glyph, Status } from "../components/Ui";
 import { abortUpload, completeUpload, createUploadIntent, getJob } from "../lib/api";
 import type { Job, MaterialJobAccepted, MaterialPartition, UploadedPart } from "../lib/api";
-import { MATERIAL_STATUS_LABELS, mediaTypeForFile, partitionLabels, toStatusTone, validateMaterialFile } from "../domain";
+import { mediaTypeForFile, partitionLabels, toStatusTone, validateMaterialFile } from "../domain";
 import { sha256Hex } from "../lib/hashes";
 
 type Phase = "form" | "hashing" | "uploading" | "completing" | "queued" | "cancelling" | "error";
+
+const partitionOptions: Array<{
+  value: MaterialPartition;
+  title: string;
+  description: string;
+}> = [
+  { value: "SOURCE", title: "业务素材", description: "参与知识萃取、检索和来源追溯" },
+  { value: "LABELED_TRAIN", title: "标注训练", description: "用于生成和校验训练样本" },
+  { value: "LABELED_HOLDOUT", title: "留出评测", description: "仅用于独立评测，不进入萃取流程" },
+];
+
+const JOB_STATUS_LABELS: Record<Job["status"], string> = {
+  QUEUED: "等待安全校验",
+  RUNNING: "安全校验中",
+  SUCCEEDED: "校验完成",
+  FAILED: "校验失败",
+  CANCELLED: "校验已取消",
+};
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -188,7 +206,10 @@ export function UploadMaterialDialog({
     } catch (reason) {
       if (cancellingRef.current) return;
       if (reason instanceof DOMException && reason.name === "AbortError") return;
-      setError(reason instanceof Error ? reason.message : "上传失败，请稍后重试。");
+      const message = reason instanceof Error ? reason.message : "上传失败，请稍后重试。";
+      setError(reason instanceof TypeError && /fetch/i.test(message)
+        ? "浏览器无法连接对象存储。请确认 MinIO 已启动，并且上传地址可从当前浏览器访问。"
+        : message);
       setPhase("error");
       if (intentIdRef.current) {
         await abortCurrent();
@@ -200,7 +221,7 @@ export function UploadMaterialDialog({
   const cancelling = phase === "cancelling";
 
   return (
-    <dialog ref={ref} className="scene-dialog" aria-labelledby="upload-dialog-title" onCancel={handleCancel}>
+    <dialog ref={ref} className="scene-dialog upload-dialog" aria-labelledby="upload-dialog-title" onCancel={handleCancel}>
       <form
         className="model-dialog__form"
         onSubmit={(event) => {
@@ -213,54 +234,77 @@ export function UploadMaterialDialog({
           <div>
             <h2 id="upload-dialog-title">{explorationSessionId ? "添加探索素材" : "上传素材"}</h2>
             <p>{explorationSessionId
-              ? "素材先进入隔离 staging；接受候选后复用同一文件与解析结果。"
-              : "固定绑定当前轮次与当前子场景（ROUND 范围）。"}</p>
+              ? "文件先进入探索区，确认候选场景后可直接复用。"
+              : "文件将绑定当前轮次和子场景，并保留完整来源定位。"}</p>
           </div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={handleCancel} disabled={cancelling}>
             <Glyph name="close" size={16} />
           </button>
         </header>
         <div className="model-dialog__body">
-          {phase === "queued" && job ? (
-            <div className="dialog-success" role="status">
-              <Glyph name="check" size={16} />
+          {phase !== "queued" ? (
+            <div className="upload-scope" role="note">
+              <span className="upload-scope__mark"><Glyph name="link" size={16} /></span>
               <div>
-                <b>上传完成，校验任务已排队</b>
-                <span>任务 {job.jobId} · 当前状态 {jobStatus ? MATERIAL_STATUS_LABELS[jobStatus.status] ?? jobStatus.status : "QUEUED"}</span>
+                <b>{explorationSessionId ? "探索素材隔离区" : "当前轮次 · 当前子场景"}</b>
+                <span>{explorationSessionId ? "接受候选场景后复用原文件与解析结果" : "共享范围：本轮次；文件内容保持不可变"}</span>
+              </div>
+              <Status tone="info">来源可追溯</Status>
+            </div>
+          ) : null}
+
+          {phase === "queued" && job ? (
+            <div className="dialog-processing" role="status">
+              <Glyph name="history" size={16} />
+              <div>
+                <b>文件已传输，正在进行安全校验</b>
+                <span>任务 {job.jobId} · {jobStatus ? JOB_STATUS_LABELS[jobStatus.status] : "等待安全校验"}</span>
               </div>
             </div>
           ) : null}
 
           {phase !== "queued" ? (
-            <label className="field">
-              <span>文件（PDF / DOCX / XLSX / TXT）</span>
+            <div className="field">
+              <span>选择文件</span>
+              <label className={`file-picker ${file ? "file-picker--selected" : ""}`}>
               <input
                 type="file"
                 name="file"
+                aria-label="文件（PDF / DOCX / XLSX / TXT）"
                 accept=".pdf,.docx,.xlsx,.txt"
                 disabled={submitting}
                 onChange={(event) => selectFile(event.currentTarget.files?.[0] ?? null)}
               />
-              <small>200MB 上限；.doc 与 .xls 明确不支持。文件在本浏览器本地计算 SHA-256。</small>
+                <span className="file-picker__icon"><Glyph name={file ? "check" : "file"} size={22} /></span>
+                <span className="file-picker__content">
+                  <b>{file ? file.name : "点击选择 PDF、DOCX、XLSX 或 TXT"}</b>
+                  <small>{file ? `${formatBytes(file.size)} · 已通过本地格式检查` : "单文件最大 200MB；不支持旧版 .doc 和 .xls"}</small>
+                </span>
+                <span className="file-picker__action">{file ? "重新选择" : "选择文件"}</span>
+              </label>
+              <small>选择后将在浏览器本地计算 SHA-256，文件内容不会写入浏览器存储。</small>
               {fileError ? <small className="field-error" role="alert">{fileError}</small> : null}
-              {file ? <small className="field-hint">已选择：{file.name}（{formatBytes(file.size)}）</small> : null}
-            </label>
+            </div>
           ) : null}
 
           {phase !== "queued" && !explorationSessionId ? (
             <div className="field">
               <span>用途分区</span>
-              <div className="role-checks">
-                {(["SOURCE", "LABELED_TRAIN", "LABELED_HOLDOUT"] as MaterialPartition[]).map((value) => (
-                  <label key={value} className="role-check">
-                    <input type="radio" name="partition" value={value} checked={partition === value}
+              <div className="choice-grid">
+                {partitionOptions.map((option) => (
+                  <label key={option.value} className={`choice-card ${partition === option.value ? "choice-card--selected" : ""}`}>
+                    <input type="radio" name="partition" value={option.value} checked={partition === option.value}
                       disabled={submitting}
                       onChange={() => {
-                        setPartition(value);
-                        if (value === "LABELED_HOLDOUT") setRegulatorySource(false);
+                        setPartition(option.value);
+                        if (option.value === "LABELED_HOLDOUT") setRegulatorySource(false);
                       }} />
-                    <span>{value}</span>
-                    <small>{partitionLabels[value]}</small>
+                    <span className="choice-card__control" aria-hidden="true" />
+                    <span className="choice-card__copy">
+                      <b>{option.title}</b>
+                      <small>{option.description}</small>
+                      <code>{partitionLabels[option.value]}</code>
+                    </span>
                   </label>
                 ))}
               </div>
@@ -268,16 +312,18 @@ export function UploadMaterialDialog({
           ) : null}
 
           {phase !== "queued" && !explorationSessionId ? (
-            <label className="field field--row">
-              <span>监管依据</span>
-              <input type="checkbox" name="regulatorySource" disabled={submitting || partition === "LABELED_HOLDOUT"}
-                checked={regulatorySource}
-                onChange={(event) => setRegulatorySource(event.currentTarget.checked)} />
+            <label className={`toggle-field ${partition === "LABELED_HOLDOUT" ? "toggle-field--disabled" : ""}`}>
+              <span>
+                <b>标记为监管依据</b>
+                <small>{partition === "LABELED_HOLDOUT" ? "留出评测素材不能作为监管对齐依据" : "开启后，可在监管对齐时引用此文件"}</small>
+              </span>
+              <span className="switch">
+                <input type="checkbox" name="regulatorySource" disabled={submitting || partition === "LABELED_HOLDOUT"}
+                  checked={regulatorySource}
+                  onChange={(event) => setRegulatorySource(event.currentTarget.checked)} />
+                <span />
+              </span>
             </label>
-          ) : null}
-
-          {!explorationSessionId && partition === "LABELED_HOLDOUT" ? (
-            <small className="field-hint">留出评测分区不能作为监管对齐依据。</small>
           ) : null}
 
           {submitting || cancelling || sha256 ? (
@@ -298,7 +344,12 @@ export function UploadMaterialDialog({
             </div>
           ) : null}
 
-          {phase === "error" ? <div className="form-error" role="alert">{error}</div> : null}
+          {phase === "error" ? (
+            <div className="upload-error" role="alert">
+              <Glyph name="warning" size={17} />
+              <div><b>素材没有上传成功</b><span>{error}</span></div>
+            </div>
+          ) : null}
         </div>
         <footer className="model-dialog__foot">
           {phase === "queued" ? (
@@ -307,7 +358,10 @@ export function UploadMaterialDialog({
               <Button type="button" className="button--primary" onClick={() => void refreshJob()}>刷新状态</Button>
             </>
           ) : phase === "error" ? (
-            <Button type="button" className="button--quiet" onClick={onClose}>关闭</Button>
+            <>
+              <Button type="button" className="button--quiet" onClick={onClose}>关闭</Button>
+              <Button type="submit" className="button--primary" disabled={!file}>重新上传</Button>
+            </>
           ) : (
             <>
               <Button type="button" className="button--quiet" onClick={handleCancel} disabled={cancelling}>

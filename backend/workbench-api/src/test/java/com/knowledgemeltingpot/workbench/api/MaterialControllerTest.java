@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.knowledgemeltingpot.workbench.api.security.CurrentUser;
@@ -117,6 +118,17 @@ class MaterialControllerTest {
         String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(items);
         assertThat(json).contains("\"fileName\":\"scan.pdf\"", "\"status\":\"SCANNING\"")
                 .doesNotContain("objectKey", "sha256", "quarantine/", "presign");
+    }
+
+    @Test
+    void deactivatesOnlyTheRequestedMaterialBinding() {
+        UUID materialId = UUID.randomUUID();
+        UUID bindingId = UUID.randomUUID();
+
+        var response = controller.deactivateBinding(materialId, bindingId, authentication);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(204);
+        verify(service).deactivateBinding(eq(materialId), eq(bindingId), eq(actorId), anyString());
     }
 
     @Test

@@ -1,13 +1,12 @@
 import { FormEvent, useState } from "react";
 import { Button, Glyph } from "../components/Ui";
 import { ApiError, login } from "../lib/api";
+import type { AuthenticatedUser } from "../lib/api";
 
 export function LoginPage({
   onLogin,
-  onDemo,
 }: {
-  onLogin: (mustChangePassword: boolean) => void;
-  onDemo: () => void;
+  onLogin: (user: AuthenticatedUser) => void;
 }) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
@@ -26,7 +25,7 @@ export function LoginPage({
     setBusy(true);
     try {
       const user = await login(username, password);
-      onLogin(user.mustChangePassword);
+      onLogin(user);
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : "无法连接 API，请稍后重试或进入离线演示。");
     } finally {
@@ -73,7 +72,6 @@ export function LoginPage({
             {error ? <div className="form-error" role="alert">{error}</div> : null}
             <Button className="button--primary button--wide" type="submit" disabled={busy}>{busy ? "正在登录…" : "进入工作台"} <Glyph name="chevron" size={16}/></Button>
           </form>
-          <div className="login-demo-action"><span>尚未启动后端？</span><Button className="button--quiet" type="button" onClick={onDemo}>进入离线演示</Button></div>
           <div className="login-card__hint"><Glyph name="lock" size={14}/> 正式环境使用 HttpOnly 会话 Cookie 与 CSRF 防护。</div>
         </div>
       </section>

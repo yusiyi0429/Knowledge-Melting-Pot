@@ -67,11 +67,26 @@ class OpenJiuwenAgentRuntimeTest {
     }
 
     @Test
-    void redactsRuntimeFailureAndDoesNotExposeCredential() {
+    void workflowEndMarkerCannotOverwriteCollectedModelOutput() {
+        StubExecutor executor = new StubExecutor(
+                SdkTerminalResult.completed("unused"),
+                List.of(
+                        new OutputSchema("llm_output", 0, Map.of("content", "{\"rules\":[]")),
+                        new OutputSchema("llm_output", 1, Map.of("content", ",\"flows\":[]}")),
+                        new OutputSchema("end node stream", 2, "end-node-complete")));
+
+        AgentExecutionResult result = runtime(executor).stream(ignored -> { });
+
+        assertEquals(AgentExecutionStatus.COMPLETED, result.status());
+        assertEquals("{\"rules\":[],\"flows\":[]}", result.output());
+    }
+
+    @Test
+    void replacesRuntimeFailureDetailSoModelOutputAndCredentialsCannotLeak() {
         SdkJobExecutor executor = new StubExecutor(SdkTerminalResult.completed("unused"), List.of()) {
             @Override
             public SdkTerminalResult execute() {
-                throw new IllegalStateException("Authorization: Bearer secret-token");
+                throw new IllegalStateException("raw-model-output Authorization: Bearer secret-token");
             }
         };
 
@@ -79,7 +94,8 @@ class OpenJiuwenAgentRuntimeTest {
 
         assertEquals(AgentExecutionStatus.FAILED, result.status());
         assertFalse(result.failureMessage().contains("secret-token"));
-        assertTrue(result.failureMessage().contains("[REDACTED]"));
+        assertFalse(result.failureMessage().contains("raw-model-output"));
+        assertEquals("Agent execution failed", result.failureMessage());
     }
 
     private static OpenJiuwenAgentRuntime runtime(SdkJobExecutor executor) {

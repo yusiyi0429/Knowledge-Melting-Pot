@@ -138,6 +138,17 @@ public class JdbcMaterialRepository implements MaterialRepository, MaterialSelec
     }
 
     @Override
+    public boolean deactivateBinding(UUID materialId, UUID bindingId) {
+        return jdbc.sql("""
+                UPDATE round_material SET active = FALSE
+                WHERE id = :bindingId AND material_id = :materialId
+                """)
+                .param("materialId", materialId)
+                .param("bindingId", bindingId)
+                .update() == 1;
+    }
+
+    @Override
     public MaterialUploadIntent insertIntent(MaterialUploadIntent intent) {
         jdbc.sql("""
                 INSERT INTO material_upload_intent (

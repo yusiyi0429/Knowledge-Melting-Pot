@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PropsWithChildren } from "react";
 import type { GlyphName } from "./Ui";
 import { Glyph } from "./Ui";
-import { getCurrentUser, getNotificationInbox, markAllNotificationsRead, markNotificationRead, searchWorkbench } from "../lib/api";
+import { getNotificationInbox, markAllNotificationsRead, markNotificationRead, searchWorkbench } from "../lib/api";
 import type { AuthenticatedUser, NotificationInbox, SearchResult } from "../lib/api";
 
 interface NavItem {
@@ -29,10 +29,8 @@ function roleLabel(user: AuthenticatedUser | null | undefined): string | null {
   return "无角色";
 }
 
-export function Shell({ pathname, onNavigate, children }: PropsWithChildren<{ pathname: string; onNavigate: (href: string) => void }>) {
+export function Shell({ pathname, onNavigate, user, children }: PropsWithChildren<{ pathname: string; onNavigate: (href: string) => void; user: AuthenticatedUser }>) {
   const isActive = (href: string) => href === "/" ? pathname === "/" : pathname.startsWith(href.split("/").slice(0, 2).join("/"));
-  // undefined = still loading; null = no session or read failure -> neutral identity.
-  const [user, setUser] = useState<AuthenticatedUser | null | undefined>(undefined);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -40,20 +38,6 @@ export function Shell({ pathname, onNavigate, children }: PropsWithChildren<{ pa
   const searchInput = useRef<HTMLInputElement>(null);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [inbox, setInbox] = useState<NotificationInbox>({ unreadCount: 0, items: [] });
-
-  useEffect(() => {
-    let cancelled = false;
-    getCurrentUser()
-      .then((loaded) => {
-        if (!cancelled) setUser(loaded);
-      })
-      .catch(() => {
-        if (!cancelled) setUser(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -115,14 +99,8 @@ export function Shell({ pathname, onNavigate, children }: PropsWithChildren<{ pa
     } catch { /* The next poll will reconcile the inbox. */ }
   };
 
-  const identity = user === undefined
-    ? "…"
-    : user === null
-      ? "未识别身份"
-      : user.displayName;
-  const avatarLabel = user === null || user === undefined
-    ? "当前身份未识别"
-    : `当前用户：${user.displayName}`;
+  const identity = user.displayName;
+  const avatarLabel = `当前用户：${user.displayName}`;
   const label = roleLabel(user);
 
   return (

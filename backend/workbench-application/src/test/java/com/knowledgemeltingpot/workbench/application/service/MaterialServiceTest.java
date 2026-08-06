@@ -252,4 +252,41 @@ class MaterialServiceTest {
         verify(materials).transitionStatus(materialId, MaterialStatus.PENDING_UPLOAD,
                 MaterialStatus.INACTIVE, NOW);
     }
+
+    @Test
+    void deactivatesOneBindingWithoutDeletingSharedImmutableMaterial() {
+        UUID materialId = UUID.randomUUID();
+        UUID bindingId = UUID.randomUUID();
+        Material material = new Material(materialId, "rules.docx", MaterialFormat.DOCX,
+                MaterialFormat.DOCX.mediaType(), "quarantine/" + materialId, "a".repeat(64), 10,
+                MaterialStatus.FAILED, NOW, NOW);
+        RoundMaterial binding = new RoundMaterial(bindingId, materialId, round.id(), primary.id(),
+                MaterialPartition.SOURCE, MaterialShareScope.ROUND, true, true, NOW);
+        when(materials.findById(materialId)).thenReturn(Optional.of(material));
+        when(materials.findBindings(materialId)).thenReturn(List.of(binding));
+        when(materials.deactivateBinding(materialId, bindingId)).thenReturn(true);
+
+        service.deactivateBinding(materialId, bindingId, ACTOR_ID, "trace");
+
+        verify(materials).deactivateBinding(materialId, bindingId);
+        verify(audit).record(eq(ACTOR_ID), eq("MATERIAL_BINDING_DEACTIVATED"), eq("MATERIAL"),
+                eq(materialId), anyMap(), eq("trace"));
+        verify(materials, never()).transitionStatus(eq(materialId), any(), any(), any());
+    }
+
+    @Test
+    void rejectsBindingThatDoesNotBelongToMaterial() {
+        UUID materialId = UUID.randomUUID();
+        Material material = new Material(materialId, "rules.pdf", MaterialFormat.PDF,
+                MaterialFormat.PDF.mediaType(), "quarantine/" + materialId, "a".repeat(64), 10,
+                MaterialStatus.READY, NOW, NOW);
+        when(materials.findById(materialId)).thenReturn(Optional.of(material));
+        when(materials.findBindings(materialId)).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.deactivateBinding(materialId, UUID.randomUUID(), ACTOR_ID, "trace"))
+                .isInstanceOf(com.knowledgemeltingpot.workbench.application.error.NotFoundException.class)
+                .hasMessageContaining("binding");
+
+        verify(materials, never()).deactivateBinding(any(), any());
+    }
 }

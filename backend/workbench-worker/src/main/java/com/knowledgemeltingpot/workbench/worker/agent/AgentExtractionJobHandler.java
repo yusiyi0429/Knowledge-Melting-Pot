@@ -154,7 +154,7 @@ public class AgentExtractionJobHandler implements JobHandler {
                 .sorted(Comparator.comparing(KnowledgeIr.SourceRef::code)).toList();
         KnowledgeIr ir = new KnowledgeIr(KnowledgeIr.SCHEMA_VERSION, metadata, rules, draft.flows(),
                 draft.conflicts(), draft.gaps(), refs);
-        return validator.validate(validator.assignStableRuleIds(ir));
+        return validator.validate(validator.normalizeGenerated(ir));
     }
 
     private void validateDraftSources(KnowledgeDraft draft, Set<String> allowed) {

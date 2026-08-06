@@ -73,6 +73,23 @@ class SceneServiceRoundTest {
                 .hasMessageContaining("does not belong");
     }
 
+    @Test
+    void deletingASceneArchivesItWithoutDestroyingItsLineage() {
+        UUID sceneId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+        SceneRepository scenes = mock(SceneRepository.class);
+        AuditService audit = mock(AuditService.class);
+        when(scenes.findScene(sceneId)).thenReturn(Optional.of(scene(sceneId)));
+        when(scenes.archiveScene(sceneId, actorId, NOW)).thenReturn(true);
+        SceneService service = new SceneService(scenes, mock(AssetRepository.class), audit,
+                Clock.fixed(NOW, ZoneOffset.UTC));
+
+        service.delete(sceneId, actorId, "trace");
+
+        verify(scenes).archiveScene(sceneId, actorId, NOW);
+        verify(audit).record(eq(actorId), eq("SCENE_ARCHIVED"), eq("SCENE"), eq(sceneId), any(), eq("trace"));
+    }
+
     private SceneService service(SceneRepository scenes, AssetRepository assets) {
         return new SceneService(scenes, assets, mock(AuditService.class), Clock.fixed(NOW, ZoneOffset.UTC));
     }

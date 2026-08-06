@@ -1,6 +1,6 @@
 # Private single-host deployment
 
-This Compose stack is the pilot deployment baseline. PostgreSQL, ClamAV, API and Worker stay private. Nginx publishes the workbench port; MinIO publishes API/console ports on loopback only because the browser performs local presigned multipart uploads directly.
+This Compose stack is the pilot deployment baseline. PostgreSQL, ClamAV, API and Worker stay private. Nginx publishes the workbench port and forwards only the four signed application-bucket paths to MinIO. Browser multipart uploads therefore use the same workbench origin; the MinIO console and admin API remain private to the host/backend network.
 
 ## Start
 
@@ -59,7 +59,7 @@ workbench running, set `KMP_PROVIDER_E2E_PASSWORD` and at least one of
 `scripts/verify-model-providers.sh`. The script uses read-only authenticated probes, does not
 print credentials, and soft-deletes its temporary connections.
 - Configure object-store lifecycle policies for quarantine and failed uploads.
-- Do not expose PostgreSQL, ClamAV, API or Worker ports to the host network. In the local-only browser-upload deployment, MinIO may be published only on `127.0.0.1`; use a reviewed TLS endpoint and corresponding CSP/CORS allowlist for any non-local deployment.
+- Do not expose PostgreSQL, ClamAV, API or Worker ports to the host network. The default browser-upload endpoint is the same origin as the workbench and Nginx exposes only signed application-bucket paths. The loopback MinIO ports are for local diagnosis only; use a reviewed TLS endpoint when deploying beyond one host.
 
 The API and Worker are separate images so Worker concurrency can be changed without increasing HTTP replicas. Kubernetes manifests are intentionally outside the first deployment scope.
 

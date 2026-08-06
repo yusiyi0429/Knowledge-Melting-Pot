@@ -1,5 +1,8 @@
+import { useEffect, useRef, useState } from "react";
 import { Shell } from "./components/Shell";
 import { usePathname } from "./lib/navigation";
+import { AUTHENTICATION_REQUIRED_EVENT, getCurrentUser } from "./lib/api";
+import type { AuthenticatedUser } from "./lib/api";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -18,11 +21,67 @@ function NotFound({ onNavigate }: { onNavigate: (href: string) => void }) {
 
 export default function App() {
   const { pathname, navigate } = usePathname();
+  const [user, setUser] = useState<AuthenticatedUser | null | undefined>(undefined);
+  const returnTo = useRef(
+    pathname === "/login" || pathname === "/change-password"
+      ? "/"
+      : `${window.location.pathname}${window.location.search}${window.location.hash}`,
+  );
+
+  useEffect(() => {
+    const requireAuthentication = () => {
+      if (window.location.pathname !== "/login") {
+        const target = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        if (window.location.pathname !== "/change-password") returnTo.current = target;
+        setUser(null);
+        navigate("/login", true);
+      }
+    };
+    window.addEventListener(AUTHENTICATION_REQUIRED_EVENT, requireAuthentication);
+    return () => window.removeEventListener(AUTHENTICATION_REQUIRED_EVENT, requireAuthentication);
+  }, [navigate]);
+
+  useEffect(() => {
+    if (pathname === "/login" || user !== undefined) return;
+    let cancelled = false;
+    getCurrentUser()
+      .then((loaded) => { if (!cancelled) setUser(loaded); })
+      .catch(() => { if (!cancelled) setUser(null); });
+    return () => { cancelled = true; };
+  }, [pathname, user]);
+
+  useEffect(() => {
+    if (pathname === "/login" || user === undefined) return;
+    if (user === null) {
+      navigate("/login", true);
+      return;
+    }
+    if (user.mustChangePassword && pathname !== "/change-password") {
+      navigate("/change-password", true);
+      return;
+    }
+    if (!user.mustChangePassword && pathname === "/change-password") {
+      navigate(returnTo.current, true);
+    }
+  }, [navigate, pathname, user]);
+
   if (pathname === "/login") return <LoginPage
-    onLogin={(mustChangePassword) => navigate(mustChangePassword ? "/change-password" : "/")}
-    onDemo={() => navigate("/")}
+    onLogin={(loaded) => {
+      setUser(loaded);
+      navigate(loaded.mustChangePassword ? "/change-password" : returnTo.current, true);
+    }}
   />;
-  if (pathname === "/change-password") return <ChangePasswordPage onChanged={() => navigate("/login")} />;
+
+  if (user === undefined) {
+    return <main className="auth-loading" role="status">正在验证会话…</main>;
+  }
+  if (user === null) return null;
+  if (user.mustChangePassword && pathname !== "/change-password") return null;
+  if (!user.mustChangePassword && pathname === "/change-password") return null;
+  if (pathname === "/change-password") return <ChangePasswordPage onChanged={() => {
+    setUser(null);
+    navigate("/login", true);
+  }} />;
 
   let page;
   if (pathname === "/") page = <DashboardPage onNavigate={navigate}/>;
@@ -40,5 +99,5 @@ export default function App() {
   else if (pathname === "/audit") page = <AuditPage/>;
   else page = <NotFound onNavigate={navigate}/>;
 
-  return <Shell pathname={pathname} onNavigate={navigate}>{page}</Shell>;
+  return <Shell pathname={pathname} onNavigate={navigate} user={user}>{page}</Shell>;
 }

@@ -260,11 +260,11 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
     delete:
-      summary: Delete a scene that has not entered a protected release workflow
+      summary: Remove a scene from the active workbench while preserving its lineage
       operationId: deleteScene
       responses:
         '204':
-          description: Scene deleted.
+          description: Scene archived and removed from active queries.
         '404':
           $ref: '#/components/responses/Problem'
   /scenes/{sceneId}/subscenes:
@@ -618,6 +618,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/Material'
         '404':
+          $ref: '#/components/responses/Problem'
+  /materials/{materialId}/bindings/{bindingId}:
+    parameters:
+      - name: materialId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: bindingId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      summary: Remove a material from one round/sub-scene without deleting immutable evidence
+      operationId: deactivateMaterialBinding
+      responses:
+        '204':
+          description: Binding deactivated; shared material and audit history are retained.
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
           $ref: '#/components/responses/Problem'
   /subscenes/{subSceneId}/extraction-jobs:
     post:
@@ -1160,6 +1184,71 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /model-endpoint-rules:
+    get:
+      summary: List administrator-managed trusted model hosts
+      description: ADMIN only. Rules take effect immediately and are evaluated for every initial request and redirect.
+      operationId: listModelEndpointRules
+      responses:
+        '200':
+          description: Trusted model endpoint rules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ModelEndpointRule' }
+        '403': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Add a trusted model host
+      description: ADMIN only. Exact DNS names and IPv4 addresses are supported; loopback and link-local addresses remain prohibited.
+      operationId: createModelEndpointRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelEndpointRuleRequest' }
+      responses:
+        '201':
+          description: Created endpoint rule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelEndpointRule' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /model-endpoint-rules/{modelEndpointRuleId}:
+    parameters:
+      - name: modelEndpointRuleId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      summary: Update a trusted model host rule
+      description: ADMIN only. Changes take effect immediately.
+      operationId: updateModelEndpointRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelEndpointRuleRequest' }
+      responses:
+        '200':
+          description: Updated endpoint rule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelEndpointRule' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+    delete:
+      summary: Delete a trusted model host rule
+      description: ADMIN only. Existing connections to this host become unusable unless covered by a bootstrap rule.
+      operationId: deleteModelEndpointRule
+      responses:
+        '204': { description: Endpoint rule deleted. }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
   /model-connections:
     get:
       summary: List model connections without exposing credentials
@@ -1197,6 +1286,28 @@ paths:
           $ref: '#/components/responses/Problem'
         '403':
           $ref: '#/components/responses/Problem'
+  /model-connection-setups:
+    post:
+      summary: Configure and test a model connection
+      description: >-
+        ADMIN only. Atomically creates or extends the exact host and port rule, creates a
+        provider-neutral model connection, appends its first immutable model configuration,
+        and then performs a real connectivity test. The credential is write-only and never returned.
+      operationId: setupModelConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelConnectionSetupRequest' }
+      responses:
+        '201':
+          description: Connection resources were created; inspect connectionTest for connectivity outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelConnectionSetupResponse' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /model-connections/{modelConnectionId}:
     parameters:
       - $ref: '#/components/parameters/ModelConnectionId'
@@ -2957,6 +3068,45 @@ components:
     ModelConnectionValidationStatus:
       type: string
       enum: [UNTESTED, CONNECTIVITY_VERIFIED]
+    ModelEndpointRule:
+      type: object
+      additionalProperties: false
+      required: [id, host, allowedPorts, allowHttp, allowPrivateAddresses, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        host: { type: string, minLength: 1, maxLength: 253 }
+        allowedPorts:
+          type: array
+          minItems: 1
+          maxItems: 32
+          uniqueItems: true
+          items: { type: integer, minimum: 1, maximum: 65535 }
+        allowHttp: { type: boolean }
+        allowPrivateAddresses: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ModelEndpointRuleRequest:
+      type: object
+      additionalProperties: false
+      required: [host, allowedPorts, allowHttp, allowPrivateAddresses]
+      properties:
+        host:
+          type: string
+          minLength: 1
+          maxLength: 253
+          description: Exact DNS host or IPv4 address without scheme, path, wildcard, or port.
+        allowedPorts:
+          type: array
+          minItems: 1
+          maxItems: 32
+          uniqueItems: true
+          items: { type: integer, minimum: 1, maximum: 65535 }
+        allowHttp:
+          type: boolean
+          description: Permits plaintext HTTP only for this explicitly trusted host.
+        allowPrivateAddresses:
+          type: boolean
+          description: Permits private and carrier-grade NAT addresses while still blocking loopback and link-local ranges.
     ModelConnection:
       type: object
       additionalProperties: false
@@ -2974,7 +3124,7 @@ components:
         id: { type: string, format: uuid }
         name: { type: string }
         provider: { $ref: '#/components/schemas/ModelProvider' }
-        baseUrl: { type: string, format: uri, pattern: '^https://' }
+        baseUrl: { type: string, format: uri, pattern: '^https?://' }
         enabled: { type: boolean }
         credentialConfigured:
           type: boolean
@@ -2983,6 +3133,36 @@ components:
         lastValidatedAt: { type: [string, 'null'], format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    ModelConnectionSetupRequest:
+      type: object
+      additionalProperties: false
+      required: [name, provider, baseUrl, enabled, modelId, allowPrivateAddresses]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        provider: { $ref: '#/components/schemas/ModelProvider' }
+        baseUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+          pattern: '^https?://'
+        enabled: { type: boolean }
+        modelId: { type: string, minLength: 1, maxLength: 300 }
+        allowPrivateAddresses:
+          type: boolean
+          description: Allows this exact host to resolve to private intranet addresses.
+        credential:
+          type: string
+          maxLength: 8192
+          writeOnly: true
+          description: Optional API key or provider credential. Never returned.
+    ModelConnectionSetupResponse:
+      type: object
+      additionalProperties: false
+      required: [connection, configVersion, connectionTest]
+      properties:
+        connection: { $ref: '#/components/schemas/ModelConnection' }
+        configVersion: { $ref: '#/components/schemas/ModelConfigVersion' }
+        connectionTest: { $ref: '#/components/schemas/ModelConnectionTestResult' }
     CreateModelConnectionRequest:
       type: object
       additionalProperties: false
@@ -2994,8 +3174,8 @@ components:
           type: string
           format: uri
           maxLength: 2048
-          pattern: '^https://'
-          description: Must exactly match an administrator-maintained host whitelist and resolve only to public addresses.
+          pattern: '^https?://'
+          description: Must match an administrator-maintained trusted-host rule, including its protocol, port, and network-range constraints.
         credential:
           type: string
           maxLength: 8192
@@ -3012,8 +3192,8 @@ components:
           type: string
           format: uri
           maxLength: 2048
-          pattern: '^https://'
-          description: Must exactly match an administrator-maintained host whitelist and resolve only to public addresses.
+          pattern: '^https?://'
+          description: Must match an administrator-maintained trusted-host rule, including its protocol, port, and network-range constraints.
         credential:
           type: string
           maxLength: 8192

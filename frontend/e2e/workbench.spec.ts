@@ -1,6 +1,16 @@
 import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v1/auth/me", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      id: "00000000-0000-0000-0000-000000000099",
+      username: "default-operator",
+      displayName: "默认操作员",
+      enabled: true,
+      roles: ["OPERATOR"],
+      mustChangePassword: false,
+    }) });
+  });
   await page.route("**/api/v1/notifications?*", async (route) => {
     await route.fulfill({
       status: 200,
@@ -11,10 +21,19 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/v1/embedding-profiles", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
   });
+  await page.route("**/api/v1/model-endpoint-rules", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+      return;
+    }
+    await route.continue();
+  });
 });
 
 test("walks through the auditable extraction and partial-release prototype", async ({ page }) => {
   const consoleErrors: string[] = [];
+  let extractionRetried = false;
+  let extractionRetryRequests = 0;
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
@@ -79,11 +98,13 @@ test("walks through the auditable extraction and partial-release prototype", asy
   await page.route("**/api/v1/materials?*", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
   });
-  await page.route("**/api/v1/model-connections", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
-  });
-  await page.route("**/api/v1/skills", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+  await page.route("**/api/v1/agent-configuration-catalog", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      models: [{ versionId: "model-version-1", connectionId: "connection-1", connectionName: "受控模型",
+        provider: "OPENAI_COMPATIBLE", version: 1, modelId: "qwen-plus", temperature: 0.2, maxOutputTokens: 4096 }],
+      skills: [{ versionId: "skill-version-1", skillId: "skill-1", name: "知识萃取基础模板",
+        kind: "TEMPLATE", sceneId: null, version: 1, packageHash: "d".repeat(64) }],
+    }) });
   });
   await page.route("**/api/v1/knowledge-documents/sub-1/alignment-proposals", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
@@ -115,6 +136,29 @@ test("walks through the auditable extraction and partial-release prototype", asy
   await page.route("**/api/v1/auth/csrf", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "e2e-csrf" }) });
   });
+  await page.route("**/api/v1/subscenes/sub-1/extraction-jobs", async (route) => {
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({
+      jobId: "extract-job-recovered", status: "QUEUED",
+      statusUrl: "/api/v1/jobs/extract-job-recovered", eventsUrl: "/api/v1/jobs/extract-job-recovered/events",
+    }) });
+  });
+  await page.route("**/api/v1/jobs/extract-job-recovered/retry", async (route) => {
+    extractionRetried = true;
+    extractionRetryRequests += 1;
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({
+      jobId: "extract-job-recovered", status: "QUEUED",
+      statusUrl: "/api/v1/jobs/extract-job-recovered", eventsUrl: "/api/v1/jobs/extract-job-recovered/events",
+    }) });
+  });
+  await page.route("**/api/v1/jobs/extract-job-recovered", async (route) => {
+    const succeeded = extractionRetried;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      id: "extract-job-recovered", type: "KNOWLEDGE_EXTRACTION", status: succeeded ? "SUCCEEDED" : "FAILED",
+      stage: succeeded ? "persist" : "map", percent: succeeded ? 100 : 1, attempt: succeeded ? 2 : 1,
+      errorCode: succeeded ? null : "MODEL_JSON_INVALID",
+      createdAt: "2026-08-05T08:00:00Z", updatedAt: "2026-08-05T08:01:00Z",
+    }) });
+  });
   await page.route("**/api/v1/auth/me", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       id: "u-1", username: "operator", displayName: "运营", enabled: true,
@@ -122,11 +166,10 @@ test("walks through the auditable extraction and partial-release prototype", asy
     }) });
   });
 
-  await page.goto("/login");
+  await page.goto("/");
   await expect(page).toHaveTitle("知识萃取智能体工作台");
-  await page.getByRole("button", { name: "进入离线演示" }).click();
 
-  await expect(page.getByRole("heading", { name: "知识正在形成可追溯的资产" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "知识萃取场景" })).toBeVisible();
   await page.getByRole("button", { name: "打开对公贷款五级分类" }).click();
   await expect(page).toHaveURL(/\/scenes\/corporate-loan-classification$/);
 
@@ -139,22 +182,33 @@ test("walks through the auditable extraction and partial-release prototype", asy
   // Step 2 is a real document editor seeded from the API — no simulated SSE.
   await page.getByRole("button", { name: "进入知识萃取" }).click();
   await expect(page.getByRole("textbox", { name: "知识文档 Markdown" })).toBeVisible();
+  await expect(page.getByLabel("Skill 版本")).toHaveValue("skill-version-1");
+  await expect(page.getByLabel("模型配置版本")).toHaveValue("model-version-1");
   await expect(page.getByText("v1", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("演示萃取 Job")).toHaveCount(0);
   await page.getByLabel("中文语义检索").fill("逾期风险如何判断");
   await page.getByRole("button", { name: "检索 Chunk" }).click();
   await expect(page.getByText("逾期超过三十天时进入重点复核。")).toBeVisible();
   await expect(page.getByText("Holdout 物理隔离")).toBeVisible();
+
+  // A failed Worker job is retried through the real command endpoint and resumes polling in-place.
+  await page.getByRole("button", { name: "开始 Map/Reduce 萃取" }).click();
+  await expect(page.getByText("萃取任务未完成：MODEL_JSON_INVALID")).toBeVisible();
+  await page.getByRole("button", { name: "重试任务" }).click();
+  await expect(page.getByText("Map/Reduce 萃取完成，已生成新的可验证 Revision。")).toBeVisible();
+  await expect(page.getByText("萃取任务未完成：MODEL_JSON_INVALID")).toHaveCount(0);
+  await expect(page.getByRole("progressbar", { name: "萃取任务进度" })).toHaveAttribute("value", "100");
+  expect(extractionRetryRequests).toBe(1);
   expect(consoleErrors).toEqual([]);
 });
 
 test("serves application deep links and governance routes", async ({ page }) => {
   const routes = [
-    ["/agents", "七种角色，一条可追溯配置链"],
-    ["/skills", "模板是起点，版本才是交付物"],
-    ["/models", "模型连接与生成参数分开版本化"],
+    ["/agents", "智能体角色与挂载"],
+    ["/skills", "Skill 模板与版本"],
+    ["/models", "模型连接"],
     ["/users", "用户与可组合角色"],
-    ["/audit", "从操作到内容版本的证据链"],
+    ["/audit", "审计记录"],
   ] as const;
 
   for (const [path, heading] of routes) {
@@ -254,7 +308,7 @@ test("governs agent mounts with ETag writes and transactional import", async ({ 
   await page.route("**/api/v1/agent-configuration-catalog", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       models: [{ versionId: modelVersionId, connectionId: "connection-1", connectionName: "受控模型", provider: "DASHSCOPE", version: 2, modelId: "qwen-plus", temperature: 0.2, maxOutputTokens: 4096 }],
-      skills: [{ versionId: skillVersionId, skillId: "skill-1", name: "结构化萃取", kind: "TEMPLATE", sceneId: null, version: 3, packageHash: "d".repeat(64) }],
+      skills: [{ versionId: skillVersionId, skillId: "skill-1", name: "知识萃取基础模板", kind: "TEMPLATE", sceneId: null, version: 3, packageHash: "d".repeat(64) }],
     }) });
   });
   await page.route("**/api/v1/scenes?page=0&size=100", async (route) => {
@@ -307,12 +361,10 @@ test("governs agent mounts with ETag writes and transactional import", async ({ 
 
   await page.goto("/agents");
   await expect(page.getByRole("heading", { name: "知识萃取智能体" })).toBeVisible();
-  await page.getByLabel("本层启停").selectOption("true");
-  await page.getByLabel("本层模型版本").selectOption(modelVersionId);
-  await page.getByLabel("本层 Skill 版本").selectOption(skillVersionId);
-  await page.getByLabel("本层运行参数（JSON 对象，留空继承）").fill('{"strategy":"balanced"}');
-  await page.getByRole("button", { name: "追加配置版本" }).click();
-  await expect(page.getByRole("status")).toContainText("已追加新版本");
+  await expect(page.getByText("未启用", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "启用智能体" }).click();
+  await expect(page.getByText("已就绪", { exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("已启用，模型与 Skill 版本已固化");
   expect(mountWrite).toMatchObject({ ifMatch: initialEtag, csrf: "agent-csrf", body: { scope: "SCENE", scopeId: sceneId, role: "KNOWLEDGE_EXTRACTOR", enabled: true, modelConfigVersionId: modelVersionId, skillVersionId } });
 
   await page.getByRole("button", { name: "导入配置" }).click();
@@ -387,9 +439,25 @@ test("manages model connections against the real API contract", async ({ page })
   const embeddingBodies: unknown[] = [];
   const deletes: string[] = [];
   let embeddingProfiles: Record<string, unknown>[] = [];
+  let endpointRules: Record<string, unknown>[] = [];
+  const endpointRuleBodies: unknown[] = [];
 
   await page.route("**/api/v1/auth/csrf", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(csrf) });
+  });
+  await page.route("**/api/v1/model-endpoint-rules", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(endpointRules) });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    endpointRuleBodies.push(body);
+    const created = {
+      id: "endpoint-rule-1", ...body,
+      createdAt: "2026-08-05T00:00:00Z", updatedAt: "2026-08-05T00:00:00Z",
+    };
+    endpointRules = [created];
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(created) });
   });
   await page.route("**/api/v1/model-connections", async (route) => {
     const request = route.request();
@@ -397,13 +465,33 @@ test("manages model connections against the real API contract", async ({ page })
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(connections) });
       return;
     }
+    await route.fallback();
+  });
+  await page.route("**/api/v1/model-connection-setups", async (route) => {
+    const request = route.request();
     const body = request.postDataJSON();
     expect(request.headers()["x-xsrf-token"]).toBe(csrf.token);
     expect(body.credential).toBe("e2e-write-only-credential");
-    const created = { ...modelConnectionFixture, id: "created-connection", name: body.name, provider: body.provider, baseUrl: body.baseUrl, credentialConfigured: true, validationStatus: "UNTESTED", lastValidatedAt: null };
+    const created = { ...modelConnectionFixture, id: "created-connection", name: body.name, provider: body.provider, baseUrl: body.baseUrl, credentialConfigured: true, validationStatus: "CONNECTIVITY_VERIFIED", lastValidatedAt: "2026-08-05T03:00:00Z" };
     mutations.push(body);
     connections = [created, ...connections];
-    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(created) });
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        connection: created,
+        configVersion: {
+          id: "created-version", modelConnectionId: created.id, version: 1,
+          modelId: body.modelId, temperature: 0.2, maxOutputTokens: 8192,
+          createdAt: "2026-08-05T03:00:00Z",
+        },
+        connectionTest: {
+          status: "CONNECTED", networkAttempted: true, connectivityVerified: true,
+          credentialConfigured: true, messageCode: "model.connection.verified",
+          testedAt: "2026-08-05T03:00:00Z",
+        },
+      }),
+    });
   });
   await page.route("**/api/v1/model-connections/*", async (route) => {
     const request = route.request();
@@ -474,25 +562,41 @@ test("manages model connections against the real API contract", async ({ page })
   await page.goto("/models");
 
   // Real list rendering: no demo notice, connection rows from the API.
-  await expect(page.getByRole("heading", { name: "模型连接与生成参数分开版本化" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模型连接" })).toBeVisible();
   await expect(page.getByText("DashScope 主网关")).toBeVisible();
   await expect(page.getByText("https://dashscope.aliyuncs.com/compatible-mode/v1")).toBeVisible();
   await expect(page.getByText("离线演示", { exact: true })).toHaveCount(0);
+
+  // Administrators configure an intranet endpoint policy directly in the page; it takes effect immediately.
+  await page.locator("summary").filter({ hasText: "网络访问策略" }).click();
+  await page.getByRole("button", { name: "新增可信主机" }).click();
+  await page.getByLabel("主机名或 IPv4 地址").fill("llm-gateway.bank.local");
+  await page.getByLabel("允许端口").fill("8000");
+  await page.getByLabel("允许使用 HTTP").check();
+  await page.getByRole("button", { name: "保存并立即生效" }).click();
+  await expect(page.getByRole("status").first()).toContainText("无需重启服务");
+  await expect(page.getByText("llm-gateway.bank.local")).toBeVisible();
+  expect(endpointRuleBodies).toEqual([{
+    host: "llm-gateway.bank.local", allowedPorts: [8000], allowHttp: true, allowPrivateAddresses: true,
+  }]);
 
   // Create: dialog is accessible, POST carries CSRF and the write-only credential, list refreshes.
   await page.getByRole("button", { name: "新增模型连接" }).click();
   await expect(page.getByRole("dialog", { name: "新增模型连接" })).toBeVisible();
   await page.getByLabel("名称").fill("企业模型网关");
   await page.getByLabel("Provider").selectOption("OPENAI_COMPATIBLE");
-  await page.getByLabel("Base URL").fill("https://llm-gateway.corp.example/v1");
+  await page.getByLabel("Base URL").fill("http://llm-gateway.bank.local:8000/v1");
+  await page.getByLabel("Model ID", { exact: true }).fill("bank-model-32b-v3");
   await page.getByLabel("凭据（只写）").fill("e2e-write-only-credential");
-  await page.getByRole("button", { name: "创建连接" }).click();
-  await expect(page.getByRole("status").first()).toContainText("连接已创建");
-  await expect(page.getByText("企业模型网关")).toBeVisible();
+  await page.getByLabel("允许访问内网地址").check();
+  await page.getByRole("button", { name: "保存并测试" }).click();
+  await expect(page.getByRole("status").first()).toContainText("连通测试通过");
+  await expect(page.getByText("企业模型网关", { exact: true })).toBeVisible();
   expect(mutations).toHaveLength(1);
   expect(mutations[0]).toMatchObject({
     name: "企业模型网关", provider: "OPENAI_COMPATIBLE",
-    baseUrl: "https://llm-gateway.corp.example/v1", enabled: true,
+    baseUrl: "http://llm-gateway.bank.local:8000/v1", enabled: true,
+    modelId: "bank-model-32b-v3", allowPrivateAddresses: true,
   });
   await expect(page.getByText("e2e-write-only-credential")).toHaveCount(0);
 
@@ -530,6 +634,7 @@ test("manages model connections against the real API contract", async ({ page })
   expect(versionBodies).toEqual([{ modelId: "qwen-max", temperature: 0.2, maxOutputTokens: 8192 }]);
 
   // A verified connection can activate an immutable vector profile and expose its HNSW lineage.
+  await page.locator("summary").filter({ hasText: "Embedding 与中文稠密检索" }).click();
   await page.getByLabel("已验证连接").selectOption(modelConnectionFixture.id);
   await page.getByLabel("Embedding Model ID", { exact: true }).fill("text-embedding-v4");
   await page.getByLabel("向量维度").fill("1024");
@@ -551,6 +656,84 @@ test("manages model connections against the real API contract", async ({ page })
   expect(deletes).toHaveLength(1);
   await expect(page.getByText("企业模型网关")).toHaveCount(0);
   await expect(page.locator("article").getByText("DashScope 主网关（改名）", { exact: true })).toBeVisible();
+});
+
+test("configures any Token Plan model from the generic connection dialog", async ({ page }) => {
+  const csrf = { headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "e2e-csrf" };
+  let connections: Record<string, unknown>[] = [];
+  let endpointRules: Record<string, unknown>[] = [];
+  let setupBody: Record<string, unknown> | null = null;
+
+  await page.route("**/api/v1/auth/csrf", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(csrf) });
+  });
+  await page.unroute("**/api/v1/model-endpoint-rules");
+  await page.route("**/api/v1/model-endpoint-rules", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(endpointRules) });
+  });
+  await page.route("**/api/v1/model-connections", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(connections) });
+  });
+  await page.route("**/api/v1/model-connection-setups", async (route) => {
+    expect(route.request().headers()["x-xsrf-token"]).toBe(csrf.token);
+    setupBody = route.request().postDataJSON();
+    const connection = {
+      id: "minimax-connection", name: setupBody?.name, provider: "OPENAI_COMPATIBLE",
+      baseUrl: "https://api.minimaxi.com/v1", enabled: true, credentialConfigured: true,
+      validationStatus: "CONNECTIVITY_VERIFIED", lastValidatedAt: "2026-08-05T03:00:00Z",
+      createdAt: "2026-08-05T03:00:00Z", updatedAt: "2026-08-05T03:00:00Z",
+    };
+    connections = [connection];
+    endpointRules = [{
+      id: "minimax-rule", host: "api.minimaxi.com", allowedPorts: [443],
+      allowHttp: false, allowPrivateAddresses: false,
+      createdAt: "2026-08-05T03:00:00Z", updatedAt: "2026-08-05T03:00:00Z",
+    }];
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        connection,
+        configVersion: {
+          id: "minimax-version", modelConnectionId: connection.id, version: 1,
+          modelId: setupBody?.modelId, temperature: 0.2, maxOutputTokens: 8192,
+          createdAt: "2026-08-05T03:00:00Z",
+        },
+        connectionTest: {
+          status: "CONNECTED", networkAttempted: true, connectivityVerified: true,
+          credentialConfigured: true, messageCode: "model.connection.verified",
+          testedAt: "2026-08-05T03:00:00Z",
+        },
+      }),
+    });
+  });
+
+  await page.goto("/models");
+  await expect(page.getByRole("button", { name: "快速接入" })).toHaveCount(0);
+  await page.getByRole("button", { name: "新增模型连接" }).click();
+  const dialog = page.getByRole("dialog", { name: "新增模型连接" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("名称").fill("MiniMax Token Plan");
+  await dialog.getByLabel("Provider").selectOption("OPENAI_COMPATIBLE");
+  await dialog.getByLabel("Base URL").fill("https://api.minimaxi.com/v1");
+  await dialog.getByLabel("Model ID", { exact: true }).fill("MiniMax-M2.5");
+  await dialog.getByLabel("凭据（只写）").fill("e2e-token-plan-key");
+  await dialog.getByRole("button", { name: "保存并测试" }).click();
+
+  await expect(page.getByText("MiniMax Token Plan 已保存，模型 MiniMax-M2.5 连通测试通过。")).toBeVisible();
+  await page.locator("summary").filter({ hasText: "网络访问策略" }).click();
+  await expect(page.getByText("api.minimaxi.com", { exact: true })).toBeVisible();
+  await expect(page.getByText("https://api.minimaxi.com/v1", { exact: true })).toBeVisible();
+  await expect(page.getByText("e2e-token-plan-key")).toHaveCount(0);
+  expect(setupBody).toEqual({
+    name: "MiniMax Token Plan",
+    provider: "OPENAI_COMPATIBLE",
+    baseUrl: "https://api.minimaxi.com/v1",
+    modelId: "MiniMax-M2.5",
+    credential: "e2e-token-plan-key",
+    enabled: true,
+    allowPrivateAddresses: false,
+  });
 });
 
 test("models page renders permission problems and field validation errors", async ({ page }) => {
@@ -577,6 +760,9 @@ test("models page renders permission problems and field validation errors", asyn
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([modelConnectionFixture]) });
       return;
     }
+    await route.fallback();
+  });
+  await page.route("**/api/v1/model-connection-setups", async (route) => {
     await route.fulfill({
       status: 400,
       contentType: "application/problem+json",
@@ -600,7 +786,8 @@ test("models page renders permission problems and field validation errors", asyn
   await page.getByRole("button", { name: "新增模型连接" }).click();
   await page.getByLabel("名称").fill("被拒绝的网关");
   await page.getByLabel("Base URL").fill("https://denied.example.com/v1");
-  await page.getByRole("button", { name: "创建连接" }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("denied-model");
+  await page.getByRole("button", { name: "保存并测试" }).click();
   await expect(page.getByRole("dialog")).toContainText("One or more fields are invalid");
   await expect(page.getByText("must match the host whitelist")).toBeVisible();
   await page.getByRole("button", { name: "关闭" }).click();
@@ -830,9 +1017,20 @@ const dashboardScenes = {
 test("dashboard lists real scenes, filters, paginates, and creates a new scene", async ({ page }) => {
   const csrf = { headerName: "X-XSRF-TOKEN", parameterName: "_csrf", token: "e2e-csrf" };
   const createBodies: unknown[] = [];
+  const deletedSceneIds: string[] = [];
   const requestedPages: number[] = [];
   await page.route("**/api/v1/auth/csrf", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(csrf) });
+  });
+  await page.route("**/api/v1/scenes/*", async (route) => {
+    const request = route.request();
+    if (request.method() !== "DELETE") {
+      await route.fallback();
+      return;
+    }
+    expect(request.headers()["x-xsrf-token"]).toBe(csrf.token);
+    deletedSceneIds.push(new URL(request.url()).pathname.split("/").pop() ?? "");
+    await route.fulfill({ status: 204 });
   });
   await page.route("**/api/v1/scenes*", async (route) => {
     const request = route.request();
@@ -840,7 +1038,7 @@ test("dashboard lists real scenes, filters, paginates, and creates a new scene",
       const page = Number(new URL(request.url()).searchParams.get("page") ?? "0");
       requestedPages.push(page);
       const items = page === 0
-        ? dashboardScenes.items
+        ? dashboardScenes.items.filter((item) => !deletedSceneIds.includes(item.id))
         : [{
             id: "3f7a1c2e-0000-4000-8000-000000000099",
             name: "可疑交易模式识别",
@@ -848,7 +1046,9 @@ test("dashboard lists real scenes, filters, paginates, and creates a new scene",
             createdAt: "2026-08-04T08:00:00Z",
             updatedAt: "2026-08-04T09:00:00Z",
           }];
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items, page, size: 20, total: 21 }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        items, page, size: 20, total: deletedSceneIds.length === 0 ? 21 : 20,
+      }) });
       return;
     }
     const body = request.postDataJSON();
@@ -867,7 +1067,7 @@ test("dashboard lists real scenes, filters, paginates, and creates a new scene",
   await page.goto("/");
 
   // Real paginated list, no demo notice or fake metrics.
-  await expect(page.getByRole("heading", { name: "知识正在形成可追溯的资产" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "知识萃取场景" })).toBeVisible();
   await expect(page.getByText("对公贷款五级分类")).toBeVisible();
   await expect(page.getByText("小微企业授信准入")).toBeVisible();
   await expect(page.getByText("离线演示", { exact: true })).toHaveCount(0);
@@ -882,7 +1082,7 @@ test("dashboard lists real scenes, filters, paginates, and creates a new scene",
   await page.getByRole("button", { name: "打开对公贷款五级分类" }).click();
   await expect(page).toHaveURL(/\/scenes\/3f7a1c2e-0000-4000-8000-000000000001$/);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "知识正在形成可追溯的资产" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "知识萃取场景" })).toBeVisible();
 
   // Pure frontend text search filters the loaded page only.
   await page.getByPlaceholder("按名称或描述过滤…").fill("小微企业");
@@ -900,6 +1100,15 @@ test("dashboard lists real scenes, filters, paginates, and creates a new scene",
   await page.getByRole("button", { name: "上一页" }).click();
   await expect(page.getByText("对公贷款五级分类")).toBeVisible();
   await expect(page.getByText("第 1 页 / 共 2 页")).toBeVisible();
+
+  // Delete is an explicit, CSRF-protected soft removal that preserves the knowledge lineage.
+  await page.getByRole("button", { name: "删除小微企业授信准入" }).click();
+  await expect(page.getByRole("dialog", { name: "删除场景" })).toContainText("不会物理擦除历史数据");
+  await page.getByRole("button", { name: "确认删除场景" }).click();
+  await expect(page.getByRole("status")).toContainText("已从工作台删除，历史链路仍保留");
+  await expect(page.getByRole("button", { name: "打开小微企业授信准入" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "删除小微企业授信准入" })).toHaveCount(0);
+  expect(deletedSceneIds).toEqual(["3f7a1c2e-0000-4000-8000-000000000002"]);
 
   // Create from the header entry: CSRF POST, then navigation to the returned UUID.
   await page.getByRole("button", { name: "新建萃取场景" }).first().click();
@@ -1114,6 +1323,7 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
   const intentBodies: Record<string, unknown>[] = [];
   const completeBodies: unknown[] = [];
   const putBodies: Buffer[] = [];
+  const removedBindings: string[] = [];
   const partSize = 10;
   const fileBytes = Buffer.from("pdf-content-15b");
 
@@ -1141,6 +1351,13 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
   let materials: unknown[] = [];
   await page.route("**/api/v1/materials?*", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(materials) });
+  });
+  await page.route("**/api/v1/materials/*/bindings/*", async (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    expect(route.request().headers()["x-xsrf-token"]).toBe(csrf.token);
+    removedBindings.push(route.request().url());
+    materials = [];
+    await route.fulfill({ status: 204 });
   });
   await page.route("**/api/v1/materials/upload-intents", async (route) => {
     const request = route.request();
@@ -1214,14 +1431,14 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
   await expect(page.getByRole("button", { name: "开始上传" })).toBeEnabled();
 
   // Holdout partitions disable the regulatory-alignment flag.
-  await page.getByRole("radio", { name: /LABELED_HOLDOUT/ }).check();
-  await expect(page.getByRole("checkbox", { name: "监管依据" })).toBeDisabled();
-  await expect(page.getByText("留出评测分区不能作为监管对齐依据。")).toBeVisible();
-  await page.getByRole("radio", { name: /SOURCE/ }).check();
-  await expect(page.getByRole("checkbox", { name: "监管依据" })).toBeEnabled();
+  await page.getByRole("radio", { name: /留出评测/ }).check();
+  await expect(page.getByRole("checkbox", { name: /标记为监管依据/ })).toBeDisabled();
+  await expect(page.getByText("留出评测素材不能作为监管对齐依据")).toBeVisible();
+  await page.getByRole("radio", { name: /业务素材/ }).check();
+  await expect(page.getByRole("checkbox", { name: /标记为监管依据/ })).toBeEnabled();
 
   await page.getByRole("button", { name: "开始上传" }).click();
-  await expect(page.getByText("上传完成，校验任务已排队")).toBeVisible();
+  await expect(page.getByText("文件已传输，正在进行安全校验")).toBeVisible();
   await expect(page.getByRole("dialog", { name: "上传素材" }).getByText(/任务 job-9/)).toBeVisible();
 
   expect(intentBodies).toHaveLength(1);
@@ -1249,7 +1466,7 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
 
   // Job status is refreshable and the completed material appears in the list.
   await page.getByRole("button", { name: "刷新状态" }).click();
-  await expect(page.getByText(/RUNNING/)).toBeVisible();
+  await expect(page.getByText("安全校验中")).toBeVisible();
   await page.getByRole("button", { name: "完成" }).click();
   await expect(page.getByRole("dialog", { name: "上传素材" })).toHaveCount(0);
   await expect(page.locator(".material-event-stream__head").getByText("素材已就绪", { exact: true })).toBeVisible();
@@ -1265,6 +1482,15 @@ test("uploads a material via the browser multipart presigned flow", async ({ pag
   await expect(page.getByText("rules.pdf")).toBeVisible();
   await expect(page.getByText("已上传")).toBeVisible();
   await expect(page.getByText("商业银行金融资产风险分类办法.pdf")).toHaveCount(0);
+
+  // Removing a material is deliberately a two-step binding deactivation.
+  await page.getByRole("button", { name: "移出本轮 rules.pdf" }).click();
+  expect(removedBindings).toHaveLength(0);
+  await page.getByRole("button", { name: "确认移出本轮 rules.pdf" }).click();
+  await expect(page.locator(".material-row").filter({ hasText: "rules.pdf" })).toHaveCount(0);
+  await expect(page.getByText("“rules.pdf”已移出本轮，历史记录仍保留。")).toBeVisible();
+  expect(removedBindings).toHaveLength(1);
+  expect(removedBindings[0]).toContain("/api/v1/materials/mat-7/bindings/b-7");
 });
 
 test("aborts the upload intent when a part upload fails", async ({ page }) => {
@@ -1329,7 +1555,7 @@ test("aborts the upload intent when a part upload fails", async ({ page }) => {
 
   await expect(page.getByRole("alert")).toContainText("第 2/2 部分上传失败（HTTP 500）");
   await expect.poll(() => abortUrls.length).toBe(1);
-  await expect(page.getByText("上传完成，校验任务已排队")).toHaveCount(0);
+  await expect(page.getByText("文件已传输，正在进行安全校验")).toHaveCount(0);
   await page.getByRole("button", { name: "关闭", exact: true }).last().click();
   await expect(page.getByRole("dialog", { name: "上传素材" })).toHaveCount(0);
 });
@@ -1749,22 +1975,6 @@ test("audit page shows an admin-only 403 state", async ({ page }) => {
   await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
 });
 
-test.beforeEach(async ({ page }) => {
-  // Every test that renders the Shell triggers /auth/me; provide a neutral
-  // default so no request falls through to the vite proxy and 502s. Tests that
-  // need a specific identity register their own route (registered later, wins).
-  await page.route("**/api/v1/auth/me", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-      id: "00000000-0000-0000-0000-000000000099",
-      username: "default-operator",
-      displayName: "默认操作员",
-      enabled: true,
-      roles: ["OPERATOR"],
-      mustChangePassword: false,
-    }) });
-  });
-});
-
 test("shell shows the real admin session identity and role", async ({ page }) => {
   await page.route("**/api/v1/auth/me", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
@@ -1799,16 +2009,30 @@ test("shell shows an operator identity without fabricating roles", async ({ page
   await expect(page.getByText("管理员", { exact: true })).toHaveCount(0);
 });
 
-test("shell falls back to a neutral identity without a session", async ({ page }) => {
+test("protected routes redirect to login without a session", async ({ page }) => {
   await page.route("**/api/v1/auth/me", async (route) => {
     await route.fulfill({ status: 401, contentType: "application/problem+json", body: JSON.stringify({ detail: "unauthorized", code: "authentication-failed", traceId: "t" }) });
   });
 
   await page.goto("/");
 
-  await expect(page.getByText("未识别身份").first()).toBeVisible();
-  await expect(page.getByText("曹征")).toHaveCount(0);
-  await expect(page.getByText("管理员", { exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("heading", { name: "登录工作台" })).toBeVisible();
+});
+
+test("an expired API session returns the user to login", async ({ page }) => {
+  await page.route("**/api/v1/scenes?*", async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ detail: "session expired", code: "authentication-required", traceId: "expired" }),
+    });
+  });
+
+  await page.goto("/");
+
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("heading", { name: "登录工作台" })).toBeVisible();
 });
 
 test("skill library lists templates and instances and supports the real write flow", async ({ page }) => {

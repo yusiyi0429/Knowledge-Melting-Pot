@@ -144,7 +144,10 @@ public class IngestMaterialJobHandler implements JobHandler {
 
         Path tempFile = null;
         try {
-            tempFile = Files.createTempFile("kmp-ingest-", ".tmp");
+            // Tika needs the server-validated extension to distinguish OOXML
+            // containers from a generic ZIP. The suffix is never taken from an
+            // untrusted path; MaterialFormat was fixed by the upload policy.
+            tempFile = Files.createTempFile("kmp-ingest-", "." + material.format().extension());
             ObjectStoragePort.ObjectHead head = objectStorage.head(ObjectStoragePort.StorageZone.QUARANTINE,
                     material.objectKey());
             if (head.sizeBytes() != payload.expectedSizeBytes()) {

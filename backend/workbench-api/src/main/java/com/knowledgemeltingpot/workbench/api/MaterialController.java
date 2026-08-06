@@ -96,6 +96,14 @@ public class MaterialController {
         return MaterialResponse.from(materialService.get(materialId), materialService.bindings(materialId));
     }
 
+    @DeleteMapping("/{materialId}/bindings/{bindingId}")
+    public ResponseEntity<Void> deactivateBinding(@PathVariable UUID materialId, @PathVariable UUID bindingId,
+            Authentication authentication) {
+        materialService.deactivateBinding(materialId, bindingId, currentUser.id(authentication),
+                RequestIdFilter.currentTraceId());
+        return ResponseEntity.noContent().build();
+    }
+
     public record CreateUploadIntentRequest(
             @NotBlank @Size(max = 255) String fileName,
             @Positive long sizeBytes,

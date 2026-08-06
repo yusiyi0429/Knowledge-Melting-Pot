@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, EmptyState, Glyph, PageHeader } from "../components/Ui";
-import { ApiError, createScene, listScenes } from "../lib/api";
+import { ApiError, createScene, deleteScene, listScenes } from "../lib/api";
 import type { Scene } from "../lib/api";
 
 const PAGE_SIZE = 20;
@@ -84,6 +84,66 @@ function CreateSceneDialog({
   );
 }
 
+function DeleteSceneDialog({
+  scene,
+  deleting,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  scene: Scene;
+  deleting: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    if (!node.open) node.showModal();
+    return () => {
+      if (node.open) node.close();
+    };
+  }, []);
+
+  return (
+    <dialog ref={ref} className="scene-dialog scene-delete-dialog" aria-labelledby="scene-delete-title"
+      onCancel={onClose}>
+      <div className="model-dialog__form">
+        <header className="model-dialog__head">
+          <div>
+            <h2 id="scene-delete-title">删除场景</h2>
+            <p>场景会从工作台移除，已有知识链路仍保留用于审计和追溯。</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭" onClick={onClose} disabled={deleting}>
+            <Glyph name="close" size={16} />
+          </button>
+        </header>
+        <div className="model-dialog__body scene-delete-dialog__body">
+          <div className="scene-delete-dialog__target">
+            <span>即将删除</span>
+            <strong>{scene.name}</strong>
+            <code>{scene.id}</code>
+          </div>
+          <div className="scene-delete-dialog__note">
+            <Glyph name="warning" size={17} />
+            <p><b>不会物理擦除历史数据</b><span>子场景、素材、Revision、资产、发布快照和审计记录将继续保留。</span></p>
+          </div>
+          {error ? <div className="form-error" role="alert">{error}</div> : null}
+        </div>
+        <footer className="model-dialog__foot">
+          <Button type="button" className="button--quiet" onClick={onClose} disabled={deleting}>取消</Button>
+          <Button type="button" className="button--danger" onClick={onConfirm} disabled={deleting}>
+            {deleting ? "删除中…" : "确认删除场景"}
+          </Button>
+        </footer>
+      </div>
+    </dialog>
+  );
+}
+
 export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => void }) {
   const [scenes, setScenes] = useState<Scene[] | null>(null);
   const [currentPage, setCurrentPage] = useState(0);
@@ -95,6 +155,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formFieldErrors, setFormFieldErrors] = useState<Record<string, string>>({});
+  const [deleteTarget, setDeleteTarget] = useState<Scene | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const dialogTrigger = useRef<HTMLElement | null>(null);
 
   const loadScenes = useCallback(async (page: number) => {
@@ -134,6 +198,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
 
   const openDialog = () => {
     dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setNotice(null);
     setFormError(null);
     setFormFieldErrors({});
     setDialogOpen(true);
@@ -173,12 +238,30 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
     }
   };
 
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteScene(deleteTarget.id);
+      const remaining = Math.max(0, (total ?? scenes?.length ?? 1) - 1);
+      const lastPage = Math.max(0, Math.ceil(remaining / PAGE_SIZE) - 1);
+      setDeleteTarget(null);
+      setNotice(`“${deleteTarget.name}”已从工作台删除，历史链路仍保留。`);
+      await loadScenes(Math.min(currentPage, lastPage));
+    } catch (reason) {
+      setDeleteError(reason instanceof ApiError ? reason.message : "删除失败，请稍后重试。");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="page dashboard-page">
       <PageHeader
         eyebrow="工作台 / 场景库"
-        title="知识正在形成可追溯的资产"
-        description="从原始素材到发布快照，每一次萃取、人工确认和生成结果都保留版本关系。"
+        title="知识萃取场景"
+        description="管理从业务素材、规则萃取到资产发布的完整链路。每一步都保留版本、来源和操作记录。"
         actions={<>
           <Button className="button--quiet" onClick={() => onNavigate("/explore")}>
             <Glyph name="search" />场景探索
@@ -189,6 +272,20 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
         </>}
       />
 
+      <section className="dashboard-ledger" aria-label="知识萃取流程">
+        <div className="dashboard-ledger__summary">
+          <span>SCENE LEDGER</span>
+          <strong>{total ?? "—"}</strong>
+          <p>个场景正在工作台中管理</p>
+        </div>
+        <ol className="dashboard-ledger__flow">
+          <li><span>01</span><div><b>固定素材</b><small>锁定轮次、子场景和用途分区</small></div></li>
+          <li><span>02</span><div><b>萃取规则</b><small>生成可校验文档与来源引用</small></div></li>
+          <li><span>03</span><div><b>生成资产</b><small>五类资产独立生成、独立重试</small></div></li>
+          <li><span>04</span><div><b>发布快照</b><small>以不可变 Manifest 留存完整链路</small></div></li>
+        </ol>
+      </section>
+
       {loadError ? (
         <div className="load-error" role="alert">
           <Glyph name="warning" size={16} />
@@ -196,6 +293,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
           <Button className="button--quiet button--small" onClick={() => void loadScenes(currentPage)}>重试</Button>
         </div>
       ) : null}
+      {notice ? <div className="page-notice" role="status"><Glyph name="check" size={15} />{notice}</div> : null}
       {scenes === null && !loadError ? (
         <div className="model-loading" aria-busy="true">正在加载场景列表…</div>
       ) : null}
@@ -238,7 +336,9 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
                   <div className="scene-card__lineage">
                     <span>创建于 {formatDateTime(scene.createdAt)}</span>
                   </div>
-                  <footer>
+                  <footer className="scene-card__footer">
+                    <button type="button" className="scene-card__delete" aria-label={`删除${scene.name}`}
+                      onClick={() => { setNotice(null); setDeleteError(null); setDeleteTarget(scene); }}>删除</button>
                     <span>打开场景 →</span>
                   </footer>
                 </article>
@@ -258,6 +358,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (href: string) => vo
           onClose={closeDialog}
           onSubmit={(event) => void submit(event)}
         />
+      ) : null}
+      {deleteTarget ? (
+        <DeleteSceneDialog scene={deleteTarget} deleting={deleting} error={deleteError}
+          onClose={() => { if (!deleting) setDeleteTarget(null); }} onConfirm={() => void confirmDelete()} />
       ) : null}
     </div>
   );

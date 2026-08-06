@@ -29,11 +29,21 @@ final class SdkStreamEventMapper {
                     new MappedSdkEvent(AgentExecutionEventType.PROGRESS, "", "model_reasoning");
             case "llm_usage" ->
                     new MappedSdkEvent(AgentExecutionEventType.PROGRESS, "", "model_usage");
-            case "answer", "workflow_final", "end node stream" ->
+            case "answer" ->
                     new MappedSdkEvent(
                             AgentExecutionEventType.COMPLETED,
                             SdkValueRenderer.render(payload),
-                            "completed");
+                            "answer");
+            case "workflow_final" ->
+                    new MappedSdkEvent(
+                            AgentExecutionEventType.COMPLETED,
+                            SdkValueRenderer.render(payload),
+                            "workflow_final");
+            case "end node stream" ->
+                    new MappedSdkEvent(
+                            AgentExecutionEventType.COMPLETED,
+                            SdkValueRenderer.render(payload),
+                            "workflow_end");
             case "__interaction__" ->
                     new MappedSdkEvent(
                             AgentExecutionEventType.INPUT_REQUIRED,
@@ -42,7 +52,7 @@ final class SdkStreamEventMapper {
             case "error" ->
                     new MappedSdkEvent(
                             AgentExecutionEventType.FAILED,
-                            SensitiveTextRedactor.redact(SdkValueRenderer.render(payload)),
+                            "模型执行失败",
                             "sdk_error");
             default -> new MappedSdkEvent(AgentExecutionEventType.PROGRESS, "", safeCode(type));
         };

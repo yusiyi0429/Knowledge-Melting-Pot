@@ -18,7 +18,7 @@ public class AgentWorkerConfiguration {
     VersionedAgentExecutor versionedAgentExecutor(ModelConnectionRepository modelRepository,
             SkillRepository skillRepository, CredentialCipher credentialCipher,
             ModelEndpointPolicy endpointPolicy, ObjectMapper objectMapper,
-            @Value("${workbench.agent.timeout:PT1M}") Duration timeout) {
+            @Value("${workbench.agent.timeout:PT3M}") Duration timeout) {
         return new VersionedAgentExecutor(modelRepository, skillRepository, credentialCipher, endpointPolicy,
                 objectMapper, timeout);
     }

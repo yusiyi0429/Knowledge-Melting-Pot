@@ -58,11 +58,13 @@ public class SceneService {
 
     @Transactional
     public void delete(UUID sceneId, UUID actorId, String traceId) {
-        get(sceneId);
-        if (!sceneRepository.deleteScene(sceneId)) {
+        Scene scene = get(sceneId);
+        Instant archivedAt = Instant.now(clock);
+        if (!sceneRepository.archiveScene(sceneId, actorId, archivedAt)) {
             throw new NotFoundException("scene not found: " + sceneId);
         }
-        auditService.record(actorId, "SCENE_DELETED", "SCENE", sceneId, Map.of(), traceId);
+        auditService.record(actorId, "SCENE_ARCHIVED", "SCENE", sceneId,
+                Map.of("name", scene.name(), "archivedAt", archivedAt), traceId);
     }
 
     @Transactional

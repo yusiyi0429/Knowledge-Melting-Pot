@@ -44,6 +44,16 @@ const TRIGGERS: Record<AgentRole, string> = {
   QA_EVALUATOR: "生成 QA / 评测集",
 };
 
+const BUILT_IN_SKILLS: Record<AgentRole, string> = {
+  SCENE_EXPLORER: "场景探索基础模板",
+  KNOWLEDGE_EXTRACTOR: "知识萃取基础模板",
+  ALIGNMENT_REVIEWER: "冲突检测与对齐基础模板",
+  RULE_CATALOG_GENERATOR: "规则库生成基础模板",
+  DECISION_FLOW_GENERATOR: "研判流程生成基础模板",
+  SKILL_PACKAGER: "Skill 打包基础模板",
+  QA_EVALUATOR: "QA 与评测基础模板",
+};
+
 const SCOPE_LABELS: Record<AgentMountScope, string> = {
   GLOBAL: "全局模板",
   SCENE: "场景默认",
@@ -215,6 +225,50 @@ export function AgentsPage() {
     }
   };
 
+  const enableRole = async (role: AgentRole) => {
+    if (!scope || savingRole) return;
+    setActionError(null);
+    setNotice(null);
+    const resolved = effective.find((item) => item.role === role);
+    let draft: AgentMountDraft;
+    try {
+      draft = draftFor(role);
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "运行参数不是有效 JSON。");
+      return;
+    }
+    const fallbackModel = catalog.models[0];
+    const expectedSkillName = BUILT_IN_SKILLS[role];
+    const fallbackSkill = availableSkills.find((item) => item.name === expectedSkillName && item.kind === "INSTANCE")
+      ?? availableSkills.find((item) => item.name === expectedSkillName && item.kind === "TEMPLATE");
+    if (!draft.modelConfigVersionId && !resolved?.modelConfigVersionId && !fallbackModel) {
+      setActionError("没有可用的模型配置。请先在“模型”页面创建并启用一个模型连接。");
+      return;
+    }
+    if (!draft.skillVersionId && !resolved?.skillVersionId && !fallbackSkill) {
+      setActionError(`缺少“${expectedSkillName}”。请刷新页面；若仍未出现，请确认服务已完成内置 Skill 初始化。`);
+      return;
+    }
+    draft = {
+      ...draft,
+      enabled: true,
+      modelConfigVersionId: draft.modelConfigVersionId
+        ?? (resolved?.modelConfigVersionId ? null : fallbackModel?.versionId ?? null),
+      skillVersionId: draft.skillVersionId
+        ?? (resolved?.skillVersionId ? null : fallbackSkill?.versionId ?? null),
+    };
+    setSavingRole(role);
+    try {
+      await appendAgentMount(scopeType, scopeId, scope.etag, draft);
+      setNotice(`${roles.find((item) => item.role === role)?.displayName ?? role} 已启用，模型与 Skill 版本已固化。`);
+      await reloadConfiguration();
+    } catch (reason) {
+      setActionError(reason instanceof ApiError ? reason.message : "启用失败，请刷新后重试。");
+    } finally {
+      setSavingRole(null);
+    }
+  };
+
   const parseImport = (): AgentMountDraft[] => {
     const parsed = JSON.parse(importText) as unknown;
     const values = Array.isArray(parsed)
@@ -273,8 +327,8 @@ export function AgentsPage() {
 
   return (
     <div className="page agent-governance">
-      <PageHeader eyebrow="治理 / 智能体挂载" title="七种角色，一条可追溯配置链"
-        description="每次修改都追加不可变版本；有效配置按全局、场景、子场景逐层解析。"
+      <PageHeader eyebrow="治理 / 智能体挂载" title="智能体角色与挂载"
+        description="按场景和子场景配置七种智能体角色。每次修改都会产生不可变版本，可随发布记录追溯。"
         actions={<Button className="button--quiet" onClick={() => { setImportOpen((value) => !value); setActionError(null); }}>
           <Glyph name="download" size={14} />导入配置
         </Button>} />
@@ -352,7 +406,10 @@ export function AgentsPage() {
                     </select></label></div>
                     <label><span>本层运行参数（JSON 对象，留空继承）</span><input value={editor.options} disabled={loading} onChange={(event) => updateEditor(role.role, { options: event.target.value })} placeholder='{"strategy":"balanced"}' /></label>
                   </div>
-                  <footer><span><Glyph name="lock" size={13} />{mount ? `本层 v${mount.version} · ${shortHash(mount.configHash)}` : `有效 ${shortHash(resolved?.effectiveHash)}`}</span><Button className="button--quiet" onClick={() => void saveRole(role.role)} disabled={loading || Boolean(savingRole)}>{savingRole === role.role ? "保存中…" : "追加配置版本"}</Button></footer>
+                  <footer><span><Glyph name="lock" size={13} />{mount ? `本层 v${mount.version} · ${shortHash(mount.configHash)}` : `有效 ${shortHash(resolved?.effectiveHash)}`}</span><div className="agent-card__actions">
+                    <Button className="button--quiet" onClick={() => void saveRole(role.role)} disabled={loading || Boolean(savingRole)}>{savingRole === role.role ? "保存中…" : "保存配置版本"}</Button>
+                    {!resolved?.enabled ? <Button className="agent-enable-button" onClick={() => void enableRole(role.role)} disabled={loading || Boolean(savingRole)}><Glyph name="play" size={13} />{savingRole === role.role ? "启用中…" : "启用智能体"}</Button> : null}
+                  </div></footer>
                 </article>;
               })}
             </div>

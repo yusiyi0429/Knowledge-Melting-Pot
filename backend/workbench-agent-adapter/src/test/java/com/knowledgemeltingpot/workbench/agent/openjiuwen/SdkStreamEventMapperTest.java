@@ -37,8 +37,21 @@ class SdkStreamEventMapperTest {
         assertEquals(
                 AgentExecutionEventType.INPUT_REQUIRED,
                 mapper.map(new OutputSchema("__interaction__", 0, "raw-sdk-state")).type());
-        assertEquals(
-                AgentExecutionEventType.COMPLETED,
-                mapper.map(new OutputSchema("answer", 0, Map.of("output", "final"))).type());
+        MappedSdkEvent answer = mapper.map(new OutputSchema("answer", 0, Map.of("output", "final")));
+        MappedSdkEvent workflowEnd = mapper.map(new OutputSchema("end node stream", 0, "node complete"));
+
+        assertEquals(AgentExecutionEventType.COMPLETED, answer.type());
+        assertEquals("answer", answer.code());
+        assertEquals(AgentExecutionEventType.COMPLETED, workflowEnd.type());
+        assertEquals("workflow_end", workflowEnd.code());
+    }
+
+    @Test
+    void doesNotExposeSdkErrorPayload() {
+        MappedSdkEvent mapped = mapper.map(new OutputSchema(
+                "error", 0, "raw model response Authorization: Bearer secret-token"));
+
+        assertEquals(AgentExecutionEventType.FAILED, mapped.type());
+        assertEquals("模型执行失败", mapped.text());
     }
 }
